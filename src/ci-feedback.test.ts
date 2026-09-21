@@ -94,6 +94,30 @@ test("CI snapshots distinguish failures, cancellation, pending, and skipped chec
   assert.equal(parseCiSnapshot(snapshot(null), target.url)?.status, undefined);
 });
 
+test("incomplete and unfamiliar checks stay pending without hiding valid failures", () => {
+  for (const item of [
+    { ...check(), conclusion: null },
+    { ...check(), conclusion: "FUTURE_CONCLUSION" },
+    { ...check(), status: "FUTURE_STATUS" },
+    { __typename: "FutureCheck", state: "FAILURE" },
+    { __typename: "StatusContext", state: "FUTURE_STATE" },
+    null,
+  ]) {
+    const unknown = parseCiSnapshot(snapshot([item]), target.url)!;
+    assert.equal(unknown.status?.state, "running");
+    assert.equal(unknown.failures.length, 0);
+    const mixed = parseCiSnapshot(
+      snapshot([item, check("known", 2)]),
+      target.url,
+    )!;
+    assert.equal(mixed.status?.state, "failed");
+    assert.deepEqual(
+      mixed.failures.map((failure) => failure.name),
+      ["known"],
+    );
+  }
+});
+
 test("legacy commit statuses have failure identities and URL fallbacks", () => {
   const failed = {
     __typename: "StatusContext",
@@ -124,7 +148,16 @@ test("reruns and new heads get new failure identities even when URLs are reused"
 });
 
 test("invalid or failed CI reads are not treated as green", async () => {
-  for (const value of ["invalid", "null", "{}", snapshot([null])]) {
+  for (const value of [
+    "invalid",
+    "null",
+    "{}",
+    JSON.stringify({
+      headRefOid: "sha-1",
+      state: "OPEN",
+      statusCheckRollup: {},
+    }),
+  ]) {
     assert.equal(parseCiSnapshot(value, target.url), undefined);
   }
   const pi = fakeExec(async () => response(snapshot(), 1));
@@ -209,10 +242,11 @@ interface HarnessState {
   checks: unknown[];
   failCi: boolean;
   failReviews: boolean;
+  ciError?: string;
   log: () => Promise<ReturnType<typeof response>>;
 }
 
-function harness() {
+function harness(onCiFailure?: (event: CiFailureEvent) => void) {
   const state: HarnessState = {
     head: "sha-1",
     branch: "feature",
@@ -227,6 +261,14 @@ function harness() {
   let logCalls = 0;
   const pending = new Map<number, () => void>();
   let handle = 0;
+  const delays: number[] = [];
+  const fire = () => {
+    const entry = pending.entries().next().value;
+    assert.ok(entry, "expected a scheduled timer");
+    const [id, callback] = entry;
+    pending.delete(id);
+    callback();
+  };
   const pi = {
     exec: async (command: string, args: string[]) => {
       if (command === "git") {
@@ -239,17 +281,19 @@ function harness() {
         logCalls += 1;
         return state.log();
       }
-      if (args[0] === "pr" && args[1] === "checks") return response("[]");
       if (args[0] === "pr" && args[1] === "view") {
         if (args.includes("headRefOid,state,statusCheckRollup")) {
-          return response(
-            snapshot(
-              state.checks,
-              state.checksHead ?? state.head,
-              state.lifecycle,
+          return {
+            ...response(
+              snapshot(
+                state.checks,
+                state.checksHead ?? state.head,
+                state.lifecycle,
+              ),
+              state.failCi ? 1 : 0,
             ),
-            state.failCi ? 1 : 0,
-          );
+            stderr: state.ciError ?? "",
+          };
         }
         return response(
           JSON.stringify({ headRefOid: state.head, state: state.lifecycle }),
@@ -302,9 +346,13 @@ function harness() {
     pi,
     onState: (value) => states.push(value),
     onFeedback: () => {},
-    onCiFailure: (value) => events.push(value),
+    onCiFailure: (value) => {
+      onCiFailure?.(value);
+      events.push(value);
+    },
     timers: {
-      set: (callback) => {
+      set: (callback, delay) => {
+        delays.push(delay);
         pending.set(++handle, callback);
         return handle;
       },
@@ -319,10 +367,11 @@ function harness() {
     events,
     states,
     logCalls: () => logCalls,
+    delays,
+    timerIds: () => [...pending.keys()],
+    fire,
     tick: async () => {
-      const [id, callback] = pending.entries().next().value!;
-      pending.delete(id);
-      callback();
+      fire();
       await until(() => pending.size > 0);
     },
   };
@@ -457,6 +506,113 @@ test("review fetch errors do not hide newly failing CI checks", async () => {
   await h.tick();
   assert.equal(h.events.length, 1);
   assert.equal(h.states.at(-1)?.health, "error");
+  h.poller.stop();
+});
+
+test("failed CI delivery is retried and successful delivery is deduplicated", async () => {
+  let attempts = 0;
+  const h = harness(() => {
+    if (++attempts === 1) throw new Error("consumer failed");
+  });
+  await h.poller.watch("/repo");
+  assert.equal(h.events.length, 0);
+  await h.tick();
+  assert.equal(h.events.length, 1);
+  assert.equal(attempts, 2);
+  await h.tick();
+  assert.equal(attempts, 2);
+  h.poller.stop();
+});
+
+test("unknown check states do not degrade health or delay known failures", async () => {
+  const h = harness();
+  h.state.checks = [{ ...check(), conclusion: null }, check("known", 2)];
+  await h.poller.watch("/repo");
+  assert.equal(h.states.at(-1)?.health, "ok");
+  assert.equal(h.events[0]?.failures[0]?.name, "known");
+  assert.equal(h.delays.at(-1), 30_000);
+  await h.tick();
+  assert.equal(h.states.at(-1)?.health, "ok");
+  assert.equal(h.delays.at(-1), 30_000);
+  h.poller.stop();
+});
+
+for (const watching of [false, true]) {
+  for (const auth of [false, true]) {
+    test(`CI fetch failures retain status and back off (${watching ? "watching" : "idle"}, ${auth ? "auth" : "network"})`, async () => {
+      const h = harness();
+      if (watching) await h.poller.watch("/repo");
+      else {
+        h.poller.start("/repo");
+        await until(() => h.states.length === 1);
+      }
+      h.state.failCi = true;
+      h.state.ciError = auth
+        ? "Bad credentials; run gh auth login"
+        : "network unavailable";
+      const base = watching ? 30_000 : 60_000;
+      await h.tick();
+      assert.equal(h.states.at(-1)?.health, auth ? "unauthenticated" : "error");
+      assert.equal(h.states.at(-1)?.pullRequest?.ci?.state, "failed");
+      assert.equal(h.delays.at(-1), base * 2);
+      await h.tick();
+      assert.equal(h.delays.at(-1), base * 4);
+      h.state.failCi = false;
+      h.state.ciError = undefined;
+      await h.tick();
+      assert.equal(h.states.at(-1)?.health, "ok");
+      assert.equal(h.delays.at(-1), base);
+      h.poller.stop();
+    });
+  }
+}
+
+for (const fireNewTimer of [false, true]) {
+  test(`stale cycles ${fireNewTimer ? "restart an elapsed" : "preserve a newer"} watch timer`, async () => {
+    const h = harness();
+    h.state.checks = [];
+    await h.poller.watch("/repo");
+    let release!: () => void;
+    h.state.log = () =>
+      new Promise((resolve) => {
+        release = () => resolve(response("late diagnostics"));
+      });
+    h.state.checks = [check()];
+    h.fire();
+    await until(() => h.logCalls() === 1);
+    h.poller.unwatch();
+    h.state.checks = [];
+    await h.poller.watch("/repo");
+    const timers = h.timerIds();
+    const schedules = h.delays.length;
+    if (fireNewTimer) h.fire(); // The old cycle is still busy.
+    release();
+    await new Promise((resolve) => setImmediate(resolve));
+    if (fireNewTimer) {
+      assert.equal(h.timerIds().length, 1);
+      assert.equal(h.delays.length, schedules + 1);
+      assert.equal(h.delays.at(-1), 30_000);
+    } else {
+      assert.deepEqual(h.timerIds(), timers);
+      assert.equal(h.delays.length, schedules);
+    }
+    assert.equal(h.events.length, 0);
+    await h.tick();
+    assert.equal(h.states.at(-1)?.health, "ok");
+    h.poller.stop();
+  });
+}
+
+test("discovery and branch changes keep scheduling polls", async () => {
+  const h = harness();
+  h.poller.start("/repo");
+  await until(() => h.states.length === 1);
+  assert.equal(h.timerIds().length, 1);
+  h.state.branch = "other";
+  await h.tick();
+  assert.equal(h.states.at(-1)?.branch, "other");
+  await h.tick();
+  assert.equal(h.states.length, 3);
   h.poller.stop();
 });
 

@@ -39,7 +39,10 @@ Each failed execution is delivered once while you stay on the same pull request
 in the session, including across `/pr unwatch` and `/pr watch`. Failed reruns and
 failures on new commits are delivered again. Canceled, skipped, and passing
 checks don't start agent turns. Large sets of failures arrive in batches of up
-to 20 checks, and failures from superseded commits are discarded.
+to 20 checks, and failures from superseded commits are discarded. Checks with
+incomplete or unfamiliar statuses stay pending without hiding other failures.
+GitHub read errors retain the last known CI status and slow polling until reads
+succeed again, whether or not you're watching.
 
 Stop watching:
 

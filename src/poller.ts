@@ -12,7 +12,6 @@ import {
   type CiSnapshot,
   ciHeadIsCurrent,
   fetchCiSnapshot,
-  fetchCiStatus,
   withCiDiagnostics,
 } from "./ci.ts";
 import {
@@ -139,7 +138,7 @@ export function createPoller(options: PollerOptions): Poller {
 
   const schedule = (health: PullRequestHealth): void => {
     if (!active) return;
-    if (timer) timers.clear(timer);
+    if (timer !== undefined) timers.clear(timer);
 
     const base = watching ? WATCH_INTERVAL_MS : IDLE_INTERVAL_MS;
     const delay =
@@ -147,6 +146,7 @@ export function createPoller(options: PollerOptions): Poller {
         ? base
         : Math.min(base * 2 ** Math.min(failures, 5), MAX_BACKOFF_MS);
     timer = timers.set(() => {
+      timer = undefined;
       void cycle();
     }, delay);
   };
@@ -166,7 +166,8 @@ export function createPoller(options: PollerOptions): Poller {
       discovered.lifecycle === "open" &&
       snapshot.open &&
       discovered.headRefOid === snapshot.headRefOid;
-    if (!current()) return;
+    const onCiFailure = options.onCiFailure;
+    if (!current() || !onCiFailure) return;
     // Large matrices are drained over successive polls instead of flooding a turn.
     const fresh = snapshot.failures
       .filter((item) => !seenCi.has(item.id))
@@ -179,17 +180,18 @@ export function createPoller(options: PollerOptions): Poller {
       currentBranch(pi, pollCwd),
     ]);
     if (!current() || !sameHead || nextBranch !== branch) return;
-    for (const item of fresh) seenCi.add(item.id);
+    const delivered = seenCi;
     try {
-      options.onCiFailure?.({
+      onCiFailure({
         protocol: PI_PR_PROTOCOL,
         source: "pi-prs",
         target,
         headRefOid: snapshot.headRefOid,
         failures,
       });
+      for (const item of fresh) delivered.add(item.id);
     } catch {
-      // Consumers must not break the polling loop.
+      // Leave failed deliveries unseen so the next poll can retry.
     }
   };
 
@@ -245,17 +247,7 @@ export function createPoller(options: PollerOptions): Poller {
       const target = discovered.target;
       const token = generation;
       const [ci, threads] = await Promise.all([
-        watching
-          ? fetchCiSnapshot(pi, pollCwd, target)
-          : fetchCiStatus(pi, pollCwd, target.url).then((status) => ({
-              value: {
-                status,
-                headRefOid: nextPullRequest.headRefOid,
-                open: true,
-                failures: [],
-              } as CiSnapshot,
-              authFailed: false,
-            })),
+        fetchCiSnapshot(pi, pollCwd, target),
         (watching
           ? fetchFeedback(pi, pollCwd, target)
           : fetchThreadCount(pi, pollCwd, target)) as Promise<
@@ -328,7 +320,11 @@ export function createPoller(options: PollerOptions): Poller {
       publish(nextHealth);
     } finally {
       cycleRunning = false;
-      schedule(nextHealth);
+      // A watch/unwatch may already have scheduled a newer timer. Preserve it.
+      // If it fired while this cycle was busy, restart using the latest health.
+      if (!pendingWatch && timer === undefined) {
+        schedule(state?.health ?? nextHealth);
+      }
     }
   };
 
@@ -343,7 +339,7 @@ export function createPoller(options: PollerOptions): Poller {
     },
     stop: () => {
       active = false;
-      if (timer) timers.clear(timer);
+      if (timer !== undefined) timers.clear(timer);
       timer = undefined;
       clearTarget();
       state = undefined;

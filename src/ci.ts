@@ -73,32 +73,15 @@ export function selectCiStatus(
   }
 }
 
-export async function fetchCiStatus(
-  pi: ExtensionAPI,
-  cwd: string,
-  pullRequestUrl: string,
-): Promise<PullRequestCiStatus | undefined> {
-  const result = await gh(
-    pi,
-    [
-      "pr",
-      "checks",
-      pullRequestUrl,
-      "--json",
-      "bucket,link,startedAt,completedAt",
-    ],
-    cwd,
-  );
-  return result.stdout
-    ? selectCiStatus(result.stdout, pullRequestUrl)
-    : undefined;
-}
-
 export interface CiSnapshot {
   headRefOid: string;
   open: boolean;
   status?: PullRequestCiStatus;
   failures: CiFailure[];
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function text(value: unknown): string {
@@ -123,11 +106,11 @@ export function parseCiSnapshot(
   pullRequestUrl: string,
 ): CiSnapshot | undefined {
   try {
-    const parsed = JSON.parse(output);
+    const parsed: unknown = JSON.parse(output);
     if (
-      !parsed ||
+      !isRecord(parsed) ||
       typeof parsed.headRefOid !== "string" ||
-      !["OPEN", "CLOSED", "MERGED"].includes(parsed.state) ||
+      !["OPEN", "CLOSED", "MERGED"].includes(text(parsed.state)) ||
       (parsed.statusCheckRollup !== null &&
         !Array.isArray(parsed.statusCheckRollup))
     ) {
@@ -135,42 +118,20 @@ export function parseCiSnapshot(
     }
     const checks: PullRequestCheck[] = [];
     const failures: CiFailure[] = [];
-    for (const item of parsed.statusCheckRollup ?? []) {
-      if (!item || !["CheckRun", "StatusContext"].includes(item.__typename))
-        return undefined;
+    for (const raw of (parsed.statusCheckRollup ?? []) as unknown[]) {
+      // Incomplete or unfamiliar checks must not hide valid failures or make
+      // the rollup green. Keep them pending without degrading transport health.
+      const item = isRecord(raw) ? raw : {};
       const isRun = item.__typename === "CheckRun";
+      const known = isRun || item.__typename === "StatusContext";
       const conclusion = text(isRun ? item.conclusion : item.state);
-      if (
-        isRun &&
-        ![
-          "QUEUED",
-          "IN_PROGRESS",
-          "COMPLETED",
-          "WAITING",
-          "REQUESTED",
-          "PENDING",
-        ].includes(item.status)
-      ) {
-        return undefined;
-      }
-      if (
-        (!isRun || item.status === "COMPLETED") &&
-        !FAILURE_CONCLUSIONS.has(conclusion) &&
-        ![
-          "SUCCESS",
-          "NEUTRAL",
-          "SKIPPED",
-          "CANCELLED",
-          "STALE",
-          "PENDING",
-          "EXPECTED",
-        ].includes(conclusion)
-      ) {
-        return undefined;
-      }
-      const pending = isRun
-        ? item.status !== "COMPLETED"
-        : ["PENDING", "EXPECTED"].includes(conclusion);
+      const terminal =
+        FAILURE_CONCLUSIONS.has(conclusion) ||
+        ["SUCCESS", "NEUTRAL", "SKIPPED", "CANCELLED", "STALE"].includes(
+          conclusion,
+        );
+      const pending =
+        !known || !terminal || (isRun && item.status !== "COMPLETED");
       const failed = !pending && FAILURE_CONCLUSIONS.has(conclusion);
       const check: PullRequestCheck = {
         state: pending
@@ -305,9 +266,10 @@ export async function ciHeadIsCurrent(
     cwd,
   );
   try {
-    const parsed = JSON.parse(result.stdout);
+    const parsed: unknown = JSON.parse(result.stdout);
     return (
       result.code === 0 &&
+      isRecord(parsed) &&
       parsed.state === "OPEN" &&
       parsed.headRefOid === headRefOid
     );
