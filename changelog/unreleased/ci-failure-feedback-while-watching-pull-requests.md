@@ -1,6 +1,8 @@
 ---
 title: CI failure feedback while watching pull requests
 type: feature
+prs:
+  - 3
 authors:
   - mavam
   - codex
