@@ -1,13 +1,20 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
   PI_PR_PROTOCOL,
+  type CiFailureEvent,
   type PullRequestHealth,
   type PullRequestSnapshot,
   type PullRequestStateEvent,
   type PullRequestTarget,
   type ReviewFeedback,
 } from "./api.ts";
-import { fetchCiStatus } from "./ci.ts";
+import {
+  type CiSnapshot,
+  ciHeadIsCurrent,
+  fetchCiSnapshot,
+  fetchCiStatus,
+  withCiDiagnostics,
+} from "./ci.ts";
 import {
   type DiscoveredPullRequest,
   currentBranch,
@@ -44,6 +51,7 @@ export interface PollerOptions {
   pi: ExtensionAPI;
   onState: (state: PullRequestStateEvent) => void;
   onFeedback: (target: PullRequestTarget, feedback: ReviewFeedback[]) => void;
+  onCiFailure?: (event: CiFailureEvent) => void;
   timers?: PollerTimer;
 }
 
@@ -74,6 +82,7 @@ export function createPoller(options: PollerOptions): Poller {
   let cwd = process.cwd();
   let timer: unknown;
   let cycleRunning = false;
+  let pendingWatch: object | undefined;
   let failures = 0;
 
   let branch = "";
@@ -81,14 +90,19 @@ export function createPoller(options: PollerOptions): Poller {
   let discovered: DiscoveredPullRequest | undefined;
   let watching = false;
   let seen = new Set<string>();
+  let seenCi = new Set<string>();
+  // Invalidates in-flight work on watch changes, target changes, and shutdown.
+  let generation = 0;
   let state: PullRequestStateEvent | undefined;
   let ciStatus: PullRequestSnapshot["ci"];
   let unresolvedThreadCount = 0;
 
   const clearTarget = (): void => {
+    generation += 1;
     discovered = undefined;
     watching = false;
     seen = new Set<string>();
+    seenCi = new Set<string>();
     ciStatus = undefined;
     unresolvedThreadCount = 0;
   };
@@ -137,16 +151,59 @@ export function createPoller(options: PollerOptions): Poller {
     }, delay);
   };
 
+  const deliverCi = async (
+    snapshot: CiSnapshot,
+    target: PullRequestTarget,
+    pollCwd: string,
+    token: number,
+  ): Promise<void> => {
+    const current = () =>
+      active &&
+      watching &&
+      generation === token &&
+      cwd === pollCwd &&
+      discovered?.target.url === target.url &&
+      discovered.lifecycle === "open" &&
+      snapshot.open &&
+      discovered.headRefOid === snapshot.headRefOid;
+    if (!current()) return;
+    // Large matrices are drained over successive polls instead of flooding a turn.
+    const fresh = snapshot.failures
+      .filter((item) => !seenCi.has(item.id))
+      .slice(0, 20);
+    if (fresh.length === 0) return;
+    const failures = await withCiDiagnostics(pi, pollCwd, target, fresh);
+    if (!current()) return;
+    const [sameHead, nextBranch] = await Promise.all([
+      ciHeadIsCurrent(pi, pollCwd, target, snapshot.headRefOid),
+      currentBranch(pi, pollCwd),
+    ]);
+    if (!current() || !sameHead || nextBranch !== branch) return;
+    for (const item of fresh) seenCi.add(item.id);
+    try {
+      options.onCiFailure?.({
+        protocol: PI_PR_PROTOCOL,
+        source: "pi-prs",
+        target,
+        headRefOid: snapshot.headRefOid,
+        failures,
+      });
+    } catch {
+      // Consumers must not break the polling loop.
+    }
+  };
+
   /** One poll: resolve the pull request, refresh its state, publish. */
   const cycle = async (): Promise<void> => {
-    if (!active || cycleRunning) return;
+    if (!active || cycleRunning || pendingWatch) return;
     cycleRunning = true;
     const pollCwd = cwd;
+    const initialGeneration = generation;
     let nextHealth: PullRequestHealth = state?.health ?? "ok";
 
     try {
       const nextBranch = await currentBranch(pi, pollCwd);
-      if (!active) return;
+      if (!active || generation !== initialGeneration) return;
       if (nextBranch !== branch || pollCwd !== cwd) {
         branch = nextBranch;
         clearTarget();
@@ -162,8 +219,10 @@ export function createPoller(options: PollerOptions): Poller {
         return;
       }
 
+      const discoveryGeneration = generation;
       const result = await discoverPullRequest(pi, pollCwd, branch);
-      if (!active || pollCwd !== cwd) return;
+      if (!active || pollCwd !== cwd || generation !== discoveryGeneration)
+        return;
       repository = result.repository;
       if (result.authFailed || result.failed) {
         failures += 1;
@@ -184,37 +243,69 @@ export function createPoller(options: PollerOptions): Poller {
       discovered = nextPullRequest;
 
       const target = discovered.target;
+      const token = generation;
       const [ci, threads] = await Promise.all([
-        fetchCiStatus(pi, pollCwd, target.url),
+        watching
+          ? fetchCiSnapshot(pi, pollCwd, target)
+          : fetchCiStatus(pi, pollCwd, target.url).then((status) => ({
+              value: {
+                status,
+                headRefOid: nextPullRequest.headRefOid,
+                open: true,
+                failures: [],
+              } as CiSnapshot,
+              authFailed: false,
+            })),
         (watching
           ? fetchFeedback(pi, pollCwd, target)
           : fetchThreadCount(pi, pollCwd, target)) as Promise<
           FetchOutcome<FeedbackSnapshot | ThreadCountSnapshot>
         >,
       ]);
-      if (!active || pollCwd !== cwd || discovered?.target.url !== target.url) {
+      if (
+        !active ||
+        pollCwd !== cwd ||
+        generation !== token ||
+        discovered?.target.url !== target.url
+      ) {
         return;
       }
 
       if (!threads.value) {
         failures += 1;
         nextHealth = threads.authFailed ? "unauthenticated" : "error";
+        if (watching && ci.value) {
+          ciStatus = ci.value.status;
+          await deliverCi(ci.value, target, pollCwd, token);
+          if (!active || generation !== token) return;
+        }
         publish(nextHealth);
         return;
       }
 
-      failures = 0;
       nextHealth = "ok";
-      ciStatus = ci;
+      if (ci.value) {
+        failures = 0;
+        ciStatus = ci.value.status;
+      } else {
+        failures += 1;
+        nextHealth = ci.authFailed ? "unauthenticated" : "error";
+      }
       unresolvedThreadCount = threads.value.unresolvedThreadCount;
-      if (threads.value.lifecycle) discovered.lifecycle = threads.value.lifecycle;
+      if (threads.value.lifecycle)
+        discovered.lifecycle = threads.value.lifecycle;
 
-      if (isFeedbackSnapshot(threads.value)) {
+      if (
+        watching &&
+        discovered.lifecycle === "open" &&
+        isFeedbackSnapshot(threads.value)
+      ) {
         const snapshot = threads.value;
         const fresh = snapshot.feedback.filter((item) => !seen.has(item.id));
         for (const item of snapshot.feedback) seen.add(item.id);
         const external = fresh.filter(
-          (item) => !snapshot.viewerLogin || item.author !== snapshot.viewerLogin,
+          (item) =>
+            !snapshot.viewerLogin || item.author !== snapshot.viewerLogin,
         );
         if (external.length > 0) {
           try {
@@ -227,6 +318,8 @@ export function createPoller(options: PollerOptions): Poller {
 
       // Watching a pull request ends when the pull request does.
       if (watching && discovered.lifecycle !== "open") watching = false;
+      if (ci.value) await deliverCi(ci.value, target, pollCwd, token);
+      if (!active || generation !== token) return;
 
       publish(nextHealth);
     } catch {
@@ -263,64 +356,107 @@ export function createPoller(options: PollerOptions): Poller {
     },
     watch: async (nextCwd) => {
       active = true;
-      const cwdChanged = cwd !== nextCwd;
-      cwd = nextCwd;
-
-      const nextBranch = await currentBranch(pi, nextCwd);
-      if (!nextBranch) {
-        return { ok: false, error: "No branch is checked out" };
-      }
-      if (nextBranch !== branch || cwdChanged) {
-        branch = nextBranch;
-        clearTarget();
-      }
-
-      const result = await discoverPullRequest(pi, nextCwd, branch);
-      repository = result.repository;
-      if (result.authFailed || result.failed) {
-        return {
+      let token = ++generation;
+      const request = {};
+      pendingWatch = request;
+      try {
+        const cancelled = (): WatchResult => ({
           ok: false,
-          error: result.authFailed
-            ? "GitHub authentication failed; run gh auth login"
-            : "Failed to resolve the current pull request from GitHub",
-        };
-      }
-      if (!result.pullRequest) {
-        return {
-          ok: false,
-          error: "No pull request found for the current branch",
-        };
-      }
-      if (discovered?.target.url !== result.pullRequest.target.url) clearTarget();
-      discovered = result.pullRequest;
-      if (discovered.lifecycle !== "open") {
-        return { ok: false, error: `The pull request is ${discovered.lifecycle}` };
-      }
+          error: "Watching was canceled",
+        });
+        const cwdChanged = cwd !== nextCwd;
+        cwd = nextCwd;
 
-      const target = discovered.target;
-      const snapshot = await fetchFeedback(pi, nextCwd, target);
-      if (!snapshot.value) {
-        return {
-          ok: false,
-          error: snapshot.authFailed
-            ? "GitHub authentication failed; run gh auth login"
-            : "Failed to read pull request feedback from GitHub",
-        };
-      }
+        const nextBranch = await currentBranch(pi, nextCwd);
+        if (!active || generation !== token) return cancelled();
+        if (!nextBranch) {
+          return { ok: false, error: "No branch is checked out" };
+        }
+        if (nextBranch !== branch || cwdChanged) {
+          branch = nextBranch;
+          clearTarget();
+          token = generation;
+        }
 
-      watching = true;
-      unresolvedThreadCount = snapshot.value.unresolvedThreadCount;
-      seen = new Set(snapshot.value.feedback.map((item) => item.id));
-      ciStatus = await fetchCiStatus(pi, nextCwd, target.url);
+        const result = await discoverPullRequest(pi, nextCwd, branch);
+        if (!active || generation !== token) return cancelled();
+        repository = result.repository;
+        if (result.authFailed || result.failed) {
+          return {
+            ok: false,
+            error: result.authFailed
+              ? "GitHub authentication failed; run gh auth login"
+              : "Failed to resolve the current pull request from GitHub",
+          };
+        }
+        if (!result.pullRequest) {
+          return {
+            ok: false,
+            error: "No pull request found for the current branch",
+          };
+        }
+        if (discovered?.target.url !== result.pullRequest.target.url) {
+          clearTarget();
+          token = generation;
+        }
+        discovered = result.pullRequest;
+        if (discovered.lifecycle !== "open") {
+          return {
+            ok: false,
+            error: `The pull request is ${discovered.lifecycle}`,
+          };
+        }
 
-      publish("ok");
-      if (snapshot.value.openFeedback.length > 0) {
-        onFeedback(target, snapshot.value.openFeedback);
+        const target = discovered.target;
+        const [snapshot, ci] = await Promise.all([
+          fetchFeedback(pi, nextCwd, target),
+          fetchCiSnapshot(pi, nextCwd, target),
+        ]);
+        if (!active || generation !== token) return cancelled();
+        if (!snapshot.value) {
+          return {
+            ok: false,
+            error: snapshot.authFailed
+              ? "GitHub authentication failed; run gh auth login"
+              : "Failed to read pull request feedback from GitHub",
+          };
+        }
+
+        if (snapshot.value.lifecycle && snapshot.value.lifecycle !== "open") {
+          discovered.lifecycle = snapshot.value.lifecycle;
+          watching = false;
+          publish("ok");
+          return {
+            ok: false,
+            error: `The pull request is ${snapshot.value.lifecycle}`,
+          };
+        }
+        watching = true;
+        unresolvedThreadCount = snapshot.value.unresolvedThreadCount;
+        seen = new Set(snapshot.value.feedback.map((item) => item.id));
+        if (ci.value) ciStatus = ci.value.status;
+
+        const health = ci.value
+          ? "ok"
+          : ci.authFailed
+            ? "unauthenticated"
+            : "error";
+        publish(health);
+        if (snapshot.value.openFeedback.length > 0) {
+          onFeedback(target, snapshot.value.openFeedback);
+        }
+        if (ci.value) await deliverCi(ci.value, target, nextCwd, token);
+        if (!active || generation !== token) return cancelled();
+        return { ok: true, target };
+      } finally {
+        if (pendingWatch === request) {
+          pendingWatch = undefined;
+          schedule(state?.health ?? "ok");
+        }
       }
-      schedule("ok");
-      return { ok: true, target };
     },
     unwatch: () => {
+      generation += 1;
       if (!watching) return false;
       watching = false;
       publish("ok");
