@@ -10,6 +10,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 export const PI_PR_PROTOCOL = 1 as const;
 export const PI_PR_STATE_CHANNEL = "pi-prs:state";
 export const PI_PR_FEEDBACK_CHANNEL = "pi-prs:feedback";
+export const PI_PR_CI_FAILURE_CHANNEL = "pi-prs:ci-failure";
 
 export interface PullRequestTarget {
   host: string;
@@ -36,7 +37,7 @@ export interface PullRequestSnapshot {
   headRefOid: string;
   ci?: PullRequestCiStatus;
   unresolvedThreadCount: number;
-  /** True while `/pr watch` streams feedback for this pull request. */
+  /** True while `/pr watch` streams reviews and CI failures for this pull request. */
   watching: boolean;
 }
 
@@ -78,6 +79,49 @@ export interface FeedbackEvent {
   feedback: ReviewFeedback[];
 }
 
+export interface CiFailure {
+  /** Execution identity, including commit and timestamps to distinguish reruns. */
+  id: string;
+  name: string;
+  workflow: string;
+  conclusion: string;
+  url: string;
+  /** Bounded, untrusted diagnostic output; absent when unavailable. */
+  log?: string;
+}
+
+export interface CiFailureEvent {
+  protocol: typeof PI_PR_PROTOCOL;
+  source: "pi-prs";
+  target: PullRequestTarget;
+  headRefOid: string;
+  failures: CiFailure[];
+}
+
+export function isCiFailureEvent(value: unknown): value is CiFailureEvent {
+  return (
+    isRecord(value) &&
+    value.protocol === PI_PR_PROTOCOL &&
+    value.source === "pi-prs" &&
+    isRecord(value.target) &&
+    ["host", "owner", "name", "url"].every(
+      (key) =>
+        typeof (value.target as Record<string, unknown>)[key] === "string",
+    ) &&
+    typeof value.target.number === "number" &&
+    typeof value.headRefOid === "string" &&
+    Array.isArray(value.failures) &&
+    value.failures.every(
+      (item) =>
+        isRecord(item) &&
+        ["id", "name", "workflow", "conclusion", "url"].every(
+          (key) => typeof item[key] === "string",
+        ) &&
+        (item.log === undefined || typeof item.log === "string"),
+    )
+  );
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -107,6 +151,7 @@ export function isFeedbackEvent(value: unknown): value is FeedbackEvent {
 export interface PiPrClient {
   onState(handler: (event: PullRequestStateEvent) => void): () => void;
   onFeedback(handler: (event: FeedbackEvent) => void): () => void;
+  onCiFailure(handler: (event: CiFailureEvent) => void): () => void;
 }
 
 /** Create a typed client over the import-free event-bus protocol. */
@@ -119,6 +164,10 @@ export function createPiPrClient(pi: ExtensionAPI): PiPrClient {
     onFeedback: (handler) =>
       pi.events.on(PI_PR_FEEDBACK_CHANNEL, (raw) => {
         if (isFeedbackEvent(raw)) handler(raw);
+      }),
+    onCiFailure: (handler) =>
+      pi.events.on(PI_PR_CI_FAILURE_CHANNEL, (raw) => {
+        if (isCiFailureEvent(raw)) handler(raw);
       }),
   };
 }

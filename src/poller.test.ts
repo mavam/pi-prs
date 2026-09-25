@@ -1,11 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import {
-  createPoller,
-  type Poller,
-  type PollerTimer,
-} from "./poller.ts";
+import { createPoller, type Poller, type PollerTimer } from "./poller.ts";
 import type { PullRequestStateEvent } from "./api.ts";
 
 interface Scenario {
@@ -35,17 +31,26 @@ function fakePi(scenario: Scenario): ExtensionAPI {
           "remote.origin.url https://github.com/acme/repo.git\n",
         );
       }
-      if (command === "gh" && args[0] === "pr" && args[1] === "checks") {
+      if (
+        command === "gh" &&
+        args.includes("headRefOid,state,statusCheckRollup")
+      ) {
         return response(
           0,
-          JSON.stringify([
-            {
-              bucket: "fail",
-              link: `https://github.com/acme/repo/actions/runs/${scenario.targetNumber}`,
-              startedAt: "2026-01-01T10:00:00Z",
-              completedAt: "2026-01-01T10:01:00Z",
-            },
-          ]),
+          JSON.stringify({
+            headRefOid: `oid-${scenario.metadataVersion}`,
+            state: "OPEN",
+            statusCheckRollup: [
+              {
+                __typename: "CheckRun",
+                status: "COMPLETED",
+                conclusion: "FAILURE",
+                detailsUrl: `https://github.com/acme/repo/actions/runs/${scenario.targetNumber}`,
+                startedAt: "2026-01-01T10:00:00Z",
+                completedAt: "2026-01-01T10:01:00Z",
+              },
+            ],
+          }),
         );
       }
       if (command === "gh" && args[0] === "pr" && args[1] === "view") {

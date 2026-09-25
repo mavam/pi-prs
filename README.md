@@ -1,7 +1,7 @@
 # 🐙 pi-prs
 
 A [Pi](https://pi.dev) extension that owns GitHub pull request state for your
-session: footer widgets, review feedback, and watching.
+session: footer widgets, review feedback, CI failures, and watching.
 
 ## 🚀 Installation
 
@@ -18,15 +18,33 @@ pi-prs resolves the pull request for the current branch on its own and keeps it
 fresh in the background. Fork and upstream remotes both work, and switching
 branches re-resolves immediately.
 
-Start watching that pull request for review feedback:
+Start watching that pull request for review feedback and CI failures:
 
 ```text
 /pr watch
 ```
 
-The extension sends unresolved review feedback to pi, then checks GitHub every
-30 seconds for new comments and reviews. New external feedback starts an agent
-turn so pi can address it.
+The extension sends unresolved review feedback and current CI failures to pi,
+then checks GitHub every 30 seconds for new comments, reviews, and failed checks.
+New feedback starts an agent turn when pi is idle or steers its next turn when
+it's busy.
+
+CI messages include the commit, failed check names, and links. GitHub Actions
+failures also include short diagnostic excerpts as soon as the failed job
+finishes, even while the rest of the run continues; expand the message to see
+them. Other CI providers and unavailable logs fall back to check names and
+links. Diagnostics cover at most three jobs per batch, with up to 80 lines or
+4,000 characters per excerpt.
+
+Each failed execution is delivered once while you stay on the same pull request
+in the session, including across `/pr unwatch` and `/pr watch`. Failed reruns and
+failures on new commits are delivered again. Canceled checks and checks awaiting
+approval show as failed in the footer but don't start agent turns; neither do
+skipped or passing checks. Large sets of failures arrive in batches of up to 20
+checks, and failures from superseded commits are discarded. Checks with
+incomplete or unfamiliar statuses stay pending without hiding other failures.
+GitHub read errors retain the last known CI status and slow polling until reads
+succeed again, whether or not you're watching.
 
 Stop watching:
 
@@ -34,7 +52,8 @@ Stop watching:
 /pr unwatch
 ```
 
-Watching stops automatically when the pull request closes or merges.
+This stops both review and CI feedback; footer updates continue. Watching also
+stops automatically when the pull request closes or merges.
 
 ## 🧩 Footer widgets
 
@@ -60,11 +79,14 @@ export default function (pi) {
   client.onFeedback((event) => {
     // event.feedback: new review findings
   });
+  client.onCiFailure((event) => {
+    // event.headRefOid, event.failures: new failed CI executions
+  });
 }
 ```
 
-Publishing a `pi-prs:feedback` event yourself sends those findings to pi as a
-steering message.
+Publishing a `pi-prs:feedback` or `pi-prs:ci-failure` event yourself sends that
+feedback to pi as a steering message.
 
 ## 🧰 Requirements
 

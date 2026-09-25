@@ -1,0 +1,18 @@
+---
+title: CI failure feedback while watching pull requests
+type: feature
+prs:
+  - 3
+authors:
+  - mavam
+  - codex
+created: 2026-09-21T15:03:49.345523Z
+---
+
+`/pr watch` now sends CI failures to pi alongside review feedback:
+
+```text
+/pr watch
+```
+
+Failure messages include the commit, check names, links, and short GitHub Actions diagnostic excerpts as soon as the failed job finishes. Repeated polls stay quiet, while failed reruns and failures on new commits trigger fresh feedback. Incomplete check results stay pending without hiding other failures. Canceled checks, checks awaiting approval, and skipped checks don't start agent turns. `/pr unwatch` stops both kinds of feedback without stopping footer updates.

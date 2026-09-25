@@ -1,11 +1,18 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
+  PI_PR_CI_FAILURE_CHANNEL,
   PI_PR_FEEDBACK_CHANNEL,
   PI_PR_PROTOCOL,
   PI_PR_STATE_CHANNEL,
   type FeedbackEvent,
+  isCiFailureEvent,
   isFeedbackEvent,
 } from "./api.ts";
+import {
+  CI_FAILURE_MESSAGE_TYPE,
+  formatCiFailureMessage,
+  registerCiFailureRenderer,
+} from "./ci-message.ts";
 import { createFooterPublisher } from "./footer.ts";
 import { formatModelMessage } from "./format.ts";
 import { loadHtmlConverter } from "./markdown.ts";
@@ -27,6 +34,12 @@ export default async function (pi: ExtensionAPI) {
       pi.events.emit(PI_PR_STATE_CHANNEL, state);
       footer.publish(state);
     },
+    onCiFailure: (event) => {
+      // Outside a session the listener drops events; keep them unseen instead.
+      if (!sessionActive) return false;
+      pi.events.emit(PI_PR_CI_FAILURE_CHANNEL, event);
+      return true;
+    },
     onFeedback: (target, feedback) => {
       pi.events.emit(PI_PR_FEEDBACK_CHANNEL, {
         protocol: PI_PR_PROTOCOL,
@@ -38,6 +51,21 @@ export default async function (pi: ExtensionAPI) {
   });
 
   registerFeedbackRenderer(pi);
+  registerCiFailureRenderer(pi);
+
+  const stopCiListener = pi.events.on(PI_PR_CI_FAILURE_CHANNEL, (raw) => {
+    if (!sessionActive || !isCiFailureEvent(raw) || raw.failures.length === 0)
+      return;
+    pi.sendMessage(
+      {
+        customType: CI_FAILURE_MESSAGE_TYPE,
+        content: formatCiFailureMessage(raw),
+        display: true,
+        details: raw,
+      },
+      { deliverAs: "steer", triggerTurn: true },
+    );
+  });
 
   // Any extension may publish review feedback on this channel; pi-prs turns it
   // into a steering message for the agent.
@@ -57,13 +85,14 @@ export default async function (pi: ExtensionAPI) {
   });
 
   pi.registerCommand("pr", {
-    description: "Watch the current pull request for review feedback",
+    description:
+      "Watch the current pull request for review feedback and CI failures",
     getArgumentCompletions: (prefix) => {
       const options = [
         {
           value: "watch",
           label: "watch",
-          description: "Load open feedback and watch",
+          description: "Load review feedback and CI failures, then watch",
         },
         { value: "unwatch", label: "unwatch", description: "Stop watching" },
       ];
@@ -116,5 +145,6 @@ export default async function (pi: ExtensionAPI) {
     footer.clear();
     footer.dispose();
     stopFeedbackListener();
+    stopCiListener();
   });
 }
