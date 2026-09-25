@@ -1,0 +1,9 @@
+created: 2026-09-25
+title: CI failure feedback
+intro: >-
+  pi-prs now sends CI failures to pi while you watch a pull request, including diagnostic
+  excerpts from failed GitHub Actions jobs. This release also renames the extension's
+  identifiers to pi-prs, so integrations that use the old pi-pr names must update.
+source:
+  mode: sync-stable-queue
+  previous_stable: v0.1.0
