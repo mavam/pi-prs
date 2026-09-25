@@ -34,7 +34,12 @@ export default async function (pi: ExtensionAPI) {
       pi.events.emit(PI_PR_STATE_CHANNEL, state);
       footer.publish(state);
     },
-    onCiFailure: (event) => pi.events.emit(PI_PR_CI_FAILURE_CHANNEL, event),
+    onCiFailure: (event) => {
+      // Outside a session the listener drops events; keep them unseen instead.
+      if (!sessionActive) return false;
+      pi.events.emit(PI_PR_CI_FAILURE_CHANNEL, event);
+      return true;
+    },
     onFeedback: (target, feedback) => {
       pi.events.emit(PI_PR_FEEDBACK_CHANNEL, {
         protocol: PI_PR_PROTOCOL,

@@ -50,7 +50,8 @@ export interface PollerOptions {
   pi: ExtensionAPI;
   onState: (state: PullRequestStateEvent) => void;
   onFeedback: (target: PullRequestTarget, feedback: ReviewFeedback[]) => void;
-  onCiFailure?: (event: CiFailureEvent) => void;
+  /** Return false when the event could not be delivered; it will be retried. */
+  onCiFailure?: (event: CiFailureEvent) => boolean | void;
   timers?: PollerTimer;
 }
 
@@ -182,13 +183,14 @@ export function createPoller(options: PollerOptions): Poller {
     if (!current() || !sameHead || nextBranch !== branch) return;
     const delivered = seenCi;
     try {
-      onCiFailure({
+      const accepted = onCiFailure({
         protocol: PI_PR_PROTOCOL,
         source: "pi-prs",
         target,
         headRefOid: snapshot.headRefOid,
         failures,
       });
+      if (accepted === false) return;
       for (const item of fresh) delivered.add(item.id);
     } catch {
       // Leave failed deliveries unseen so the next poll can retry.
@@ -453,7 +455,8 @@ export function createPoller(options: PollerOptions): Poller {
     },
     unwatch: () => {
       generation += 1;
-      if (!watching) return false;
+      // Cancelling an in-flight `/pr watch` counts as stopping it.
+      if (!watching) return pendingWatch !== undefined;
       watching = false;
       publish("ok");
       schedule("ok");

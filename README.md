@@ -30,16 +30,18 @@ New feedback starts an agent turn when pi is idle or steers its next turn when
 it's busy.
 
 CI messages include the commit, failed check names, and links. GitHub Actions
-failures also include short diagnostic excerpts when logs are available; expand
-the message to see them. Other CI providers and unavailable logs fall back to
-check names and links. Diagnostics cover at most three jobs per batch, with up
-to 80 lines or 4,000 characters per excerpt.
+failures also include short diagnostic excerpts as soon as the failed job
+finishes, even while the rest of the run continues; expand the message to see
+them. Other CI providers and unavailable logs fall back to check names and
+links. Diagnostics cover at most three jobs per batch, with up to 80 lines or
+4,000 characters per excerpt.
 
 Each failed execution is delivered once while you stay on the same pull request
 in the session, including across `/pr unwatch` and `/pr watch`. Failed reruns and
-failures on new commits are delivered again. Canceled, skipped, and passing
-checks don't start agent turns. Large sets of failures arrive in batches of up
-to 20 checks, and failures from superseded commits are discarded. Checks with
+failures on new commits are delivered again. Canceled checks and checks awaiting
+approval show as failed in the footer but don't start agent turns; neither do
+skipped or passing checks. Large sets of failures arrive in batches of up to 20
+checks, and failures from superseded commits are discarded. Checks with
 incomplete or unfamiliar statuses stay pending without hiding other failures.
 GitHub read errors retain the last known CI status and slow polling until reads
 succeed again, whether or not you're watching.

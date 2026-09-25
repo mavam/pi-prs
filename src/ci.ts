@@ -16,14 +16,6 @@ interface PullRequestCheck {
   completedAt: string;
 }
 
-const CHECK_BUCKET_STATES = new Map<string, PullRequestCiState>([
-  ["fail", "failed"],
-  ["cancel", "failed"],
-  ["pending", "running"],
-  ["pass", "okay"],
-  ["skipping", "okay"],
-]);
-
 function timestamp(value: string): number {
   const parsed = Date.parse(value);
   return Number.isFinite(parsed) ? parsed : 0;
@@ -47,32 +39,6 @@ function selectStatus(
     : undefined;
 }
 
-/** Interpret `gh pr checks` output for the aggregate footer status. */
-export function selectCiStatus(
-  output: string,
-  pullRequestUrl = "",
-): PullRequestCiStatus | undefined {
-  try {
-    const parsed: unknown = JSON.parse(output);
-    if (!Array.isArray(parsed)) return undefined;
-    const checks: PullRequestCheck[] = [];
-    for (const check of parsed) {
-      if (!check || typeof check.bucket !== "string") return undefined;
-      const state = CHECK_BUCKET_STATES.get(check.bucket);
-      if (!state) return undefined;
-      checks.push({
-        state,
-        url: text(check.link),
-        startedAt: text(check.startedAt),
-        completedAt: text(check.completedAt),
-      });
-    }
-    return selectStatus(checks, pullRequestUrl);
-  } catch {
-    return undefined;
-  }
-}
-
 export interface CiSnapshot {
   headRefOid: string;
   open: boolean;
@@ -92,13 +58,18 @@ function text(value: unknown): string {
     : "";
 }
 
+/** Conclusions the agent can act on; these start agent turns. */
 const FAILURE_CONCLUSIONS = new Set([
   "FAILURE",
   "ERROR",
   "TIMED_OUT",
   "STARTUP_FAILURE",
-  "ACTION_REQUIRED",
 ]);
+
+/** Terminal but not actionable by the agent; shown as failed in the footer. */
+const BLOCKED_CONCLUSIONS = new Set(["ACTION_REQUIRED", "CANCELLED", "STALE"]);
+
+const PASSING_CONCLUSIONS = new Set(["SUCCESS", "NEUTRAL", "SKIPPED"]);
 
 /** Read checks and their PR head together, rather than attaching a guessed SHA. */
 export function parseCiSnapshot(
@@ -127,16 +98,15 @@ export function parseCiSnapshot(
       const conclusion = text(isRun ? item.conclusion : item.state);
       const terminal =
         FAILURE_CONCLUSIONS.has(conclusion) ||
-        ["SUCCESS", "NEUTRAL", "SKIPPED", "CANCELLED", "STALE"].includes(
-          conclusion,
-        );
+        BLOCKED_CONCLUSIONS.has(conclusion) ||
+        PASSING_CONCLUSIONS.has(conclusion);
       const pending =
         !known || !terminal || (isRun && item.status !== "COMPLETED");
       const failed = !pending && FAILURE_CONCLUSIONS.has(conclusion);
       const check: PullRequestCheck = {
         state: pending
           ? "running"
-          : failed || ["CANCELLED", "STALE"].includes(conclusion)
+          : failed || BLOCKED_CONCLUSIONS.has(conclusion)
             ? "failed"
             : "okay",
         url: text(isRun ? item.detailsUrl : item.targetUrl),
@@ -196,6 +166,29 @@ export async function fetchCiSnapshot(
   };
 }
 
+async function fetchJobLog(
+  pi: ExtensionAPI,
+  cwd: string,
+  target: PullRequestTarget,
+  job: string,
+): Promise<string | undefined> {
+  // Unlike `gh run view --log-failed`, the jobs API serves a job's log as soon
+  // as the job completes, even while other jobs in the run are still going.
+  const args = [
+    "api",
+    "--hostname",
+    target.host,
+    `repos/${target.owner}/${target.name}/actions/jobs/${job}/logs`,
+  ];
+  // Newer gh refuses raw output with escape sequences unless allowed; older gh
+  // lacks the flag. We strip escape sequences ourselves either way.
+  let result = await gh(pi, [...args, "--allow-escape-sequences"], cwd);
+  if (result.code !== 0 && /unknown flag/i.test(result.stderr)) {
+    result = await gh(pi, args, cwd);
+  }
+  return result.code === 0 && result.stdout.trim() ? result.stdout : undefined;
+}
+
 /** Logs can lag behind checks. Never suppress a failure because logs are missing. */
 export async function withCiDiagnostics(
   pi: ExtensionAPI,
@@ -216,42 +209,64 @@ export async function withCiDiagnostics(
           /^\/([^/]+)\/([^/]+)\/actions\/runs\/\d+(?:\/attempts\/\d+)?\/job\/(\d+)$/.exec(
             url.pathname,
           );
-        if (match?.[1] !== target.owner || match?.[2] !== target.name)
+        // GitHub owner and repository names are case-insensitive.
+        if (
+          match?.[1]?.toLowerCase() !== target.owner.toLowerCase() ||
+          match?.[2]?.toLowerCase() !== target.name.toLowerCase()
+        )
           return failure;
         job = match[3];
       } catch {
         return failure;
       }
       if (!job) return failure;
-      const result = await gh(
-        pi,
-        [
-          "run",
-          "view",
-          "--repo",
-          `${target.host}/${target.owner}/${target.name}`,
-          "--job",
-          job,
-          "--log-failed",
-        ],
-        cwd,
-      );
-      if (result.code !== 0 || !result.stdout.trim()) return failure;
-      return { ...failure, log: ciLogExcerpt(result.stdout) };
+      const log = await fetchJobLog(pi, cwd, target, job);
+      if (!log) return failure;
+      const excerpt = ciLogExcerpt(jobLogFailureWindow(log));
+      return excerpt ? { ...failure, log: excerpt } : failure;
     }),
   );
 }
 
+const LOG_TIMESTAMP = /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z ?/;
+
+/**
+ * Focus a full Actions job log on its failure: drop per-line timestamps and
+ * end at the last error annotation, so post-job cleanup doesn't crowd out the
+ * output that explains the failure.
+ */
+export function jobLogFailureWindow(log: string): string {
+  const lines = log
+    .replace(/\r\n?/g, "\n")
+    .split("\n")
+    .map((line) => line.replace(LOG_TIMESTAMP, ""))
+    .filter((line) => !line.startsWith("##[endgroup]"));
+  let end = lines.length;
+  for (let index = lines.length - 1; index >= 0; index--) {
+    if (lines[index]!.startsWith("##[error]")) {
+      end = index + 1;
+      break;
+    }
+  }
+  return lines.slice(0, end).join("\n");
+}
+
+const TRUNCATED_HEADER = "[Excerpt truncated; open the job for full logs.]";
+
+/** Bound a log excerpt; idempotent, so it also guards third-party events. */
 export function ciLogExcerpt(output: string): string {
-  const clean = stripVTControlCharacters(output)
+  let clean = stripVTControlCharacters(output)
     .replace(/\r\n?/g, "\n")
     .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, "")
     .trim();
+  const truncated = clean.startsWith(TRUNCATED_HEADER);
+  if (truncated) clean = clean.slice(TRUNCATED_HEADER.length).trimStart();
   const tail = clean.split("\n").slice(-80).join("\n").slice(-4000);
-  return tail.length < clean.length
-    ? `[Excerpt truncated; open the job for full logs.]\n${tail}`
+  return truncated || tail.length < clean.length
+    ? `${TRUNCATED_HEADER}\n${tail}`
     : tail;
 }
+
 
 /** Recheck after fetching diagnostics: the PR may have advanced or closed. */
 export async function ciHeadIsCurrent(

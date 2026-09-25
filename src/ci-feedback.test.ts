@@ -12,6 +12,7 @@ import {
 import {
   ciLogExcerpt,
   fetchCiSnapshot,
+  jobLogFailureWindow,
   parseCiSnapshot,
   withCiDiagnostics,
 } from "./ci.ts";
@@ -178,8 +179,8 @@ test("diagnostics are bounded and only fetched for jobs in the PR repository", a
     failure,
   ]);
   assert.equal(calls.length, 1);
-  assert.ok(calls[0]!.includes("github.com/acme/repo"));
-  assert.ok(calls[0]!.includes("--log-failed"));
+  assert.ok(calls[0]!.includes("repos/acme/repo/actions/jobs/1/logs"));
+  assert.ok(calls[0]!.includes("--allow-escape-sequences"));
   assert.match(failures[0]!.log!, /truncated/);
   assert.ok(failures[0]!.log!.length < 4100);
   assert.ok(!failures[0]!.log!.includes("\u001b"));
@@ -192,6 +193,61 @@ test("diagnostics are bounded and only fetched for jobs in the PR repository", a
   );
   assert.deepEqual(unavailable, [failure]);
   assert.equal(ciLogExcerpt("hello"), "hello");
+});
+
+test("diagnostics match repositories case-insensitively and fall back for old gh", async () => {
+  const calls: string[][] = [];
+  const pi = fakeExec(async (args) => {
+    calls.push(args);
+    return args.includes("--allow-escape-sequences")
+      ? { ...response("", 1), stderr: "unknown flag: --allow-escape-sequences" }
+      : response("boom");
+  });
+  const failure = {
+    ...event().failures[0]!,
+    url: "https://github.com/Acme/Repo/actions/runs/1/job/7?pr=1",
+  };
+  const [result] = await withCiDiagnostics(pi, "/repo", target, [failure]);
+  assert.equal(calls.length, 2);
+  assert.ok(!calls[1]!.includes("--allow-escape-sequences"));
+  assert.ok(calls[1]!.includes("repos/acme/repo/actions/jobs/7/logs"));
+  assert.equal(result!.log, "boom");
+});
+
+test("job log excerpts drop timestamps and post-job cleanup after the last error", () => {
+  const log = [
+    "2026-01-01T10:00:00.1234567Z ##[group]Run bun test",
+    "2026-01-01T10:00:01.1234567Z ✗ expected true, got false",
+    "2026-01-01T10:00:01.2234567Z ##[endgroup]",
+    "2026-01-01T10:00:02.1234567Z ##[error]Process completed with exit code 1.",
+    "2026-01-01T10:00:03.1234567Z Post job cleanup.",
+    "2026-01-01T10:00:04.1234567Z Cleaning up orphan processes",
+  ].join("\r\n");
+  assert.equal(
+    jobLogFailureWindow(log),
+    "##[group]Run bun test\n✗ expected true, got false\n##[error]Process completed with exit code 1.",
+  );
+  assert.equal(jobLogFailureWindow("a\nb"), "a\nb");
+});
+
+test("log excerpts are idempotent", () => {
+  for (const input of [
+    "x".repeat(10_000),
+    "line\n".repeat(500),
+    `${"y".repeat(100)}\n`.repeat(79),
+  ]) {
+    const once = ciLogExcerpt(input);
+    assert.equal(ciLogExcerpt(once), once);
+  }
+});
+
+test("action-required checks show as failed without starting agent turns", () => {
+  const value = parseCiSnapshot(
+    snapshot([check("approve", 1, "ACTION_REQUIRED")]),
+    target.url,
+  )!;
+  assert.equal(value.status?.state, "failed");
+  assert.equal(value.failures.length, 0);
 });
 
 test("CI messages include identity, links, untrusted excerpts, and output limits", () => {
@@ -246,7 +302,9 @@ interface HarnessState {
   log: () => Promise<ReturnType<typeof response>>;
 }
 
-function harness(onCiFailure?: (event: CiFailureEvent) => void) {
+function harness(
+  onCiFailure?: (event: CiFailureEvent) => boolean | void,
+) {
   const state: HarnessState = {
     head: "sha-1",
     branch: "feature",
@@ -277,7 +335,7 @@ function harness(onCiFailure?: (event: CiFailureEvent) => void) {
         if (args.includes("config"))
           return response("remote.origin.url https://github.com/acme/repo.git");
       }
-      if (args[0] === "run") {
+      if (args[0] === "api" && args.some((arg) => arg.includes("/logs"))) {
         logCalls += 1;
         return state.log();
       }
@@ -347,8 +405,9 @@ function harness(onCiFailure?: (event: CiFailureEvent) => void) {
     onState: (value) => states.push(value),
     onFeedback: () => {},
     onCiFailure: (value) => {
-      onCiFailure?.(value);
-      events.push(value);
+      const accepted = onCiFailure?.(value);
+      if (accepted !== false) events.push(value);
+      return accepted;
     },
     timers: {
       set: (callback, delay) => {
@@ -405,6 +464,33 @@ test("watch injects existing failures once, later jobs, reruns, and new heads", 
   await h.tick();
   assert.equal(h.events.length, 4);
   assert.equal(h.events[3]!.headRefOid, "sha-2");
+  h.poller.stop();
+});
+
+test("rejected CI deliveries stay unseen and are retried", async () => {
+  let accept = false;
+  const h = harness(() => accept);
+  assert.equal((await h.poller.watch("/repo")).ok, true);
+  assert.equal(h.events.length, 0);
+  accept = true;
+  await h.tick();
+  assert.equal(h.events.length, 1);
+  await h.tick();
+  assert.equal(h.events.length, 1);
+  h.poller.stop();
+});
+
+test("unwatch reports stopping a pending watch", async () => {
+  const h = harness();
+  // Unwatch before watch resolves the branch, so watching isn't set yet.
+  const watching = h.poller.watch("/repo");
+  assert.equal(h.poller.unwatch(), true);
+  assert.deepEqual(await watching, {
+    ok: false,
+    error: "Watching was canceled",
+  });
+  assert.equal(h.events.length, 0);
+  assert.equal(h.poller.unwatch(), false);
   h.poller.stop();
 });
 
