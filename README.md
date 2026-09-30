@@ -82,7 +82,8 @@ The other icons each have their own shape:
   It appears only while checks fail, since the pull request icon already shows
   pending checks.
 - The comment icon and its count show unresolved review threads.
-- The eye appears alone in the `muted` color while `/pr watch` is active.
+- The eye appears alone while `/pr watch` is active. Like the comment icon, it
+  uses the footer's default icon color, which you can change in `/fancy-footer`.
 
 ## 🔌 Extension API
 

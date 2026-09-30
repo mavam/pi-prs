@@ -10,7 +10,7 @@ interface WidgetMessage {
   widget?: {
     id: string;
     content: { text: string; href?: string };
-    icon: { glyphs: Record<string, string>; color: string };
+    icon: { glyphs: Record<string, string>; color?: string };
     layout: { row: number; position: number };
   };
 }
@@ -152,7 +152,8 @@ test("shows unresolved review threads with a comment icon", () => {
     (message) => message.widget?.id === "pi-prs.review-threads",
   )?.widget;
   assert.equal(threads?.content.text, "3");
-  assert.equal(threads?.icon.color, "text");
+  // Neutral icons leave the color to the footer's default icon color.
+  assert.equal(threads?.icon.color, undefined);
   assert.equal(
     messages.some((message) => message.widget?.id === "pi-prs.watching"),
     false,
@@ -186,10 +187,11 @@ test("shows watching as its own icon, distinct from threads and failures", () =>
 
   const watching = widgets.get("pi-prs.watching");
   assert.equal(watching?.content.text, "");
-  assert.equal(watching?.icon.color, "muted");
+  assert.equal(watching?.icon.color, undefined);
   assert.equal(watching?.layout.position, 6);
 
-  // The eye shares neither a glyph nor a color with the other icons.
+  // The eye shares no glyph with the other icons, and unlike the failure
+  // icon it doesn't claim a state color.
   const others = ["pi-prs.review-threads", "pi-prs.ci-failures"].map((id) => widgets.get(id));
   for (const other of others) {
     assert.notEqual(other?.icon.glyphs.nerd, watching?.icon.glyphs.nerd);
@@ -295,6 +297,7 @@ test("dims widgets while GitHub state is degraded", () => {
     ...state({
       ...openPullRequest,
       unresolvedThreadCount: 2,
+      watching: true,
       ci: {
         state: "failed" as const,
         url: "https://example.com/check",
@@ -307,7 +310,7 @@ test("dims widgets while GitHub state is degraded", () => {
 
   assert.deepEqual(
     messages.map((message) => message.widget?.icon.color),
-    ["dim", "dim", "dim"],
+    ["dim", "dim", "dim", "dim"],
   );
 });
 

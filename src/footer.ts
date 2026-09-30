@@ -59,7 +59,8 @@ interface WidgetSpec {
   text: string;
   href?: string;
   glyphs: Glyphs;
-  iconColor: IconColor;
+  /** Omit to use the footer's default icon color, so neutral icons follow the theme. */
+  iconColor: IconColor | undefined;
   position: number;
 }
 
@@ -121,7 +122,7 @@ function widgetsFor(state: PullRequestStateEvent): WidgetSpec[] {
       text: `${pullRequest.unresolvedThreadCount}`,
       href: url,
       glyphs: GLYPHS.reviewThreads,
-      iconColor: degraded ? "dim" : "text",
+      iconColor: degraded ? "dim" : undefined,
       position: 4,
     });
   }
@@ -141,7 +142,7 @@ function widgetsFor(state: PullRequestStateEvent): WidgetSpec[] {
     });
   }
 
-  // Watching is a session mode, so it gets its own quiet icon instead of
+  // Watching is a session mode, so it gets its own neutral icon instead of
   // borrowing the review-thread or CI slots.
   if (pullRequest.watching) {
     widgets.push({
@@ -152,7 +153,7 @@ function widgetsFor(state: PullRequestStateEvent): WidgetSpec[] {
       text: "",
       href: url,
       glyphs: GLYPHS.watching,
-      iconColor: degraded ? "dim" : "muted",
+      iconColor: degraded ? "dim" : undefined,
       position: 6,
     });
   }
@@ -194,7 +195,10 @@ export function createFooterPublisher(pi: ExtensionAPI): FooterPublisher {
             text: widget.text,
             ...(widget.href ? { href: widget.href } : {}),
           },
-          icon: { glyphs: widget.glyphs, color: widget.iconColor },
+          icon: {
+            glyphs: widget.glyphs,
+            ...(widget.iconColor ? { color: widget.iconColor } : {}),
+          },
           layout: { row: 1, position: widget.position, align: "left" },
         },
       });
