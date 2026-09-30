@@ -96,10 +96,10 @@ function widgetsFor(state: PullRequestStateEvent): WidgetSpec[] {
         : pullRequest.isDraft
           ? "dim"
           : pullRequest.lifecycle === "merged"
-            ? "muted"
+            ? "accent"
             : pullRequest.autoMergeEnabled
-              ? "accent"
-              : "text",
+              ? "warning"
+              : "success",
       position: 3,
     },
   ];
@@ -115,11 +115,7 @@ function widgetsFor(state: PullRequestStateEvent): WidgetSpec[] {
           : "",
       href: url,
       glyphs: pullRequest.watching ? GLYPHS.watching : GLYPHS.reviewThreads,
-      iconColor: degraded
-        ? "dim"
-        : pullRequest.watching
-          ? "accent"
-          : "text",
+      iconColor: degraded ? "dim" : "text",
       position: 4,
     });
   }

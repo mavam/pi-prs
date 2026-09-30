@@ -82,9 +82,11 @@ test("publishes the number widget with a structured link", () => {
 test("colors draft, auto-merge, and merged pull requests", () => {
   const cases = [
     [{ ...openPullRequest, isDraft: true }, "dim"],
-    [{ ...openPullRequest, autoMergeEnabled: true }, "accent"],
-    [{ ...openPullRequest, lifecycle: "merged" as const }, "muted"],
-    [openPullRequest, "text"],
+    [{ ...openPullRequest, autoMergeEnabled: true }, "warning"],
+    [{ ...openPullRequest, lifecycle: "merged" as const }, "accent"],
+    [{ ...openPullRequest, isDraft: true, autoMergeEnabled: true }, "dim"],
+    [{ ...openPullRequest, lifecycle: "merged" as const, autoMergeEnabled: true }, "accent"],
+    [openPullRequest, "success"],
   ] as const;
 
   for (const [pullRequest, color] of cases) {
@@ -110,7 +112,7 @@ test("swaps the review-thread glyph while watching", () => {
   const watching = messages.find(
     (message) => message.widget?.id === "pi-prs.review-threads",
   );
-  assert.equal(watching?.widget?.icon.color, "accent");
+  assert.equal(watching?.widget?.icon.color, "text");
   assert.notEqual(
     watching?.widget?.icon.glyphs.nerd,
     idle?.widget?.icon.glyphs.nerd,
@@ -126,6 +128,7 @@ test("keeps the review-thread widget visible while watching without findings", (
   )?.widget;
   assert.ok(widget);
   assert.equal(widget.content.text, "");
+  assert.equal(widget.icon.color, "text");
 });
 
 test("publishes the CI widget only when a status exists", () => {

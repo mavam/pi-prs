@@ -62,6 +62,10 @@ pi-prs publishes the pull request number, unresolved review threads, and CI
 status. You can change their placement, visibility, and colors with
 `/fancy-footer`.
 
+The pull request icon uses the theme’s `success` color for open PRs, `warning`
+for auto-merge, `accent` for merged PRs, and `dim` for drafts. The watching eye
+uses the normal `text` color. All icons dim when GitHub state is degraded.
+
 ## 🔌 Extension API
 
 pi-prs is the only extension that should poll GitHub in a session. Other
