@@ -128,7 +128,8 @@ function widgetsFor(state: PullRequestStateEvent): WidgetSpec[] {
   }
 
   // Only failures get a widget; the pull request icon already shows whether
-  // checks are running or passing. The count and link go to the failed checks.
+  // checks are running or passing and carries the error color, so this icon
+  // keeps the footer's default color. The count and link go to the failed checks.
   if (pullRequest.ci?.state === "failed") {
     widgets.push({
       id: CI_FAILURES_WIDGET_ID,
@@ -137,7 +138,7 @@ function widgetsFor(state: PullRequestStateEvent): WidgetSpec[] {
       text: `${Math.max(1, pullRequest.ci.failedCount)}`,
       href: safeHref(pullRequest.ci.url),
       glyphs: GLYPHS.ciFailed,
-      iconColor: degraded ? "dim" : "error",
+      iconColor: degraded ? "dim" : undefined,
       position: 5,
     });
   }
