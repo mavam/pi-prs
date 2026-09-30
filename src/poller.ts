@@ -114,6 +114,7 @@ export function createPoller(options: PollerOptions): Poller {
           lifecycle: discovered.lifecycle,
           isDraft: discovered.isDraft,
           autoMergeEnabled: discovered.autoMergeEnabled,
+          mergeState: discovered.mergeState,
           headRefOid: discovered.headRefOid,
           ...(ciStatus ? { ci: ciStatus } : {}),
           unresolvedThreadCount,

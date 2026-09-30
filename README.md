@@ -58,13 +58,32 @@ stops automatically when the pull request closes or merges.
 ## 🧩 Footer widgets
 
 When [pi-fancy-footer](https://github.com/mavam/pi-fancy-footer) is installed,
-pi-prs publishes the pull request number, unresolved review threads, and CI
-status. You can change their placement, visibility, and colors with
-`/fancy-footer`.
+pi-prs publishes the pull request number, unresolved review threads, failed CI
+checks, and a watching indicator. You can change their placement, visibility, and colors
+with `/fancy-footer`.
 
-The pull request icon uses the theme’s `success` color for open PRs, `warning`
-for auto-merge, `accent` for merged PRs, and `dim` for drafts. The watching eye
-uses the normal `text` color. All icons dim when GitHub state is degraded.
+The pull request icon tells you whether the PR can merge:
+
+| Color     | Meaning                                                          |
+| --------- | ---------------------------------------------------------------- |
+| `success` | Mergeable                                                        |
+| `warning` | Checks are pending                                               |
+| `error`   | Blocked by merge conflicts, failed checks, or unmet requirements |
+| `accent`  | Merged                                                           |
+| `dim`     | Draft                                                            |
+
+Auto-merge doesn't change the color. Unmet requirements include missing
+approvals, unresolved conversations that branch protection requires you to
+resolve, and an outdated branch. All icons dim when GitHub state is degraded.
+
+The other icons each have their own shape:
+
+- The red ✕ and its count show failed CI checks and link to the first failure.
+  It appears only while checks fail, since the pull request icon already shows
+  pending checks.
+- The comment icon and its count show unresolved review threads.
+- The eye appears alone while `/pr watch` is active. Like the comment icon, it
+  uses the footer's default icon color, which you can change in `/fancy-footer`.
 
 ## 🔌 Extension API
 
@@ -78,7 +97,7 @@ import { createPiPrClient } from "pi-prs/api";
 export default function (pi) {
   const client = createPiPrClient(pi);
   client.onState((state) => {
-    // state.pullRequest?.ci, .unresolvedThreadCount, .isDraft, …
+    // state.pullRequest?.ci, .mergeState, .unresolvedThreadCount, .isDraft, …
   });
   client.onFeedback((event) => {
     // event.feedback: new review findings

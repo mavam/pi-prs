@@ -10,7 +10,7 @@ interface WidgetMessage {
   widget?: {
     id: string;
     content: { text: string; href?: string };
-    icon: { glyphs: Record<string, string>; color: string };
+    icon: { glyphs: Record<string, string>; color?: string };
     layout: { row: number; position: number };
   };
 }
@@ -62,6 +62,7 @@ const openPullRequest = {
   lifecycle: "open" as const,
   isDraft: false,
   autoMergeEnabled: false,
+  mergeState: "mergeable" as const,
   headRefOid: "abc",
   unresolvedThreadCount: 0,
   watching: false,
@@ -79,81 +80,199 @@ test("publishes the number widget with a structured link", () => {
   assert.deepEqual(widget?.layout, { row: 1, position: 3, align: "left" });
 });
 
-test("colors draft, auto-merge, and merged pull requests", () => {
+test("colors pull requests by whether they can merge", () => {
+  const ci = (state: "running" | "failed" | "okay") => ({
+    state,
+    url: "https://github.com/acme/repo/actions/runs/1",
+    failedCount: state === "failed" ? 1 : 0,
+  });
   const cases = [
-    [{ ...openPullRequest, isDraft: true }, "dim"],
-    [{ ...openPullRequest, autoMergeEnabled: true }, "warning"],
-    [{ ...openPullRequest, lifecycle: "merged" as const }, "accent"],
-    [{ ...openPullRequest, isDraft: true, autoMergeEnabled: true }, "dim"],
-    [{ ...openPullRequest, lifecycle: "merged" as const, autoMergeEnabled: true }, "accent"],
-    [openPullRequest, "success"],
+    ["mergeable", openPullRequest, "success"],
+    ["mergeable with passing checks", { ...openPullRequest, ci: ci("okay") }, "success"],
+    ["unknown merge state", { ...openPullRequest, mergeState: "unknown" as const }, "success"],
+    ["pending checks", { ...openPullRequest, ci: ci("running") }, "warning"],
+    [
+      "pending required checks",
+      { ...openPullRequest, mergeState: "blocked" as const, ci: ci("running") },
+      "warning",
+    ],
+    ["blocked", { ...openPullRequest, mergeState: "blocked" as const }, "error"],
+    ["conflicts", { ...openPullRequest, mergeState: "conflicting" as const }, "error"],
+    [
+      "conflicts with pending checks",
+      { ...openPullRequest, mergeState: "conflicting" as const, ci: ci("running") },
+      "error",
+    ],
+    ["failed checks", { ...openPullRequest, ci: ci("failed") }, "error"],
+    [
+      "failed checks on a mergeable PR",
+      { ...openPullRequest, mergeState: "mergeable" as const, ci: ci("failed") },
+      "error",
+    ],
+    ["auto-merge", { ...openPullRequest, autoMergeEnabled: true }, "success"],
+    [
+      "auto-merge with pending checks",
+      { ...openPullRequest, autoMergeEnabled: true, ci: ci("running") },
+      "warning",
+    ],
+    ["draft", { ...openPullRequest, isDraft: true }, "dim"],
+    [
+      "blocked draft",
+      { ...openPullRequest, isDraft: true, mergeState: "blocked" as const },
+      "dim",
+    ],
+    ["merged", { ...openPullRequest, lifecycle: "merged" as const }, "accent"],
+    [
+      "merged with stale checks",
+      {
+        ...openPullRequest,
+        lifecycle: "merged" as const,
+        mergeState: "blocked" as const,
+        ci: ci("failed"),
+      },
+      "accent",
+    ],
   ] as const;
 
-  for (const [pullRequest, color] of cases) {
+  for (const [name, pullRequest, color] of cases) {
     const { pi, messages } = fakePi();
     createFooterPublisher(pi).publish(state(pullRequest));
-    assert.equal(messages[0]?.widget?.icon.color, color);
+    assert.equal(messages[0]?.widget?.id, "pi-prs.number", name);
+    assert.equal(messages[0]?.widget?.icon.color, color, name);
   }
 });
 
-test("swaps the review-thread glyph while watching", () => {
+test("shows unresolved review threads with a comment icon", () => {
+  const { pi, messages } = fakePi();
+  createFooterPublisher(pi).publish(
+    state({ ...openPullRequest, unresolvedThreadCount: 3 }),
+  );
+
+  const threads = messages.find(
+    (message) => message.widget?.id === "pi-prs.review-threads",
+  )?.widget;
+  assert.equal(threads?.content.text, "3");
+  // Neutral icons leave the color to the footer's default icon color.
+  assert.equal(threads?.icon.color, undefined);
+  assert.equal(
+    messages.some((message) => message.widget?.id === "pi-prs.watching"),
+    false,
+  );
+});
+
+test("shows watching as its own icon, distinct from threads and failures", () => {
+  const { pi, messages } = fakePi();
+  createFooterPublisher(pi).publish(
+    state({
+      ...openPullRequest,
+      unresolvedThreadCount: 3,
+      watching: true,
+      ci: {
+        state: "failed",
+        url: "https://github.com/acme/repo/actions/runs/1",
+        failedCount: 2,
+      },
+    }),
+  );
+
+  const widgets = new Map(
+    messages.map((message) => [message.widget?.id, message.widget]),
+  );
+  assert.deepEqual([...widgets.keys()], [
+    "pi-prs.number",
+    "pi-prs.review-threads",
+    "pi-prs.ci-failures",
+    "pi-prs.watching",
+  ]);
+
+  const watching = widgets.get("pi-prs.watching");
+  assert.equal(watching?.content.text, "");
+  assert.equal(watching?.icon.color, undefined);
+  assert.equal(watching?.layout.position, 6);
+
+  // The eye shares no glyph with the other icons, and unlike the failure
+  // icon it doesn't claim a state color.
+  const others = ["pi-prs.review-threads", "pi-prs.ci-failures"].map((id) => widgets.get(id));
+  for (const other of others) {
+    assert.notEqual(other?.icon.glyphs.nerd, watching?.icon.glyphs.nerd);
+    assert.notEqual(other?.icon.glyphs.unicode, watching?.icon.glyphs.unicode);
+  }
+  assert.notEqual(widgets.get("pi-prs.ci-failures")?.icon.color, watching?.icon.color);
+});
+
+test("keeps the review-thread count when watching stops", () => {
   const { pi, messages } = fakePi();
   const footer = createFooterPublisher(pi);
-
-  footer.publish(state({ ...openPullRequest, unresolvedThreadCount: 3 }));
-  const idle = messages.find((message) => message.widget?.id === "pi-prs.review-threads");
-  assert.match(idle?.widget?.content.text ?? "", /3/);
-  assert.equal(idle?.widget?.icon.color, "text");
-
-  messages.length = 0;
   footer.publish(
     state({ ...openPullRequest, unresolvedThreadCount: 3, watching: true }),
   );
-  const watching = messages.find(
-    (message) => message.widget?.id === "pi-prs.review-threads",
+  messages.length = 0;
+
+  footer.publish(state({ ...openPullRequest, unresolvedThreadCount: 3 }));
+  assert.deepEqual(
+    messages.filter((message) => message.type === "remove").map((m) => m.id),
+    ["pi-prs.watching"],
   );
-  assert.equal(watching?.widget?.icon.color, "text");
-  assert.notEqual(
-    watching?.widget?.icon.glyphs.nerd,
-    idle?.widget?.icon.glyphs.nerd,
+  assert.equal(
+    messages.some((message) => message.widget?.id === "pi-prs.review-threads"),
+    true,
   );
 });
 
-test("keeps the review-thread widget visible while watching without findings", () => {
+test("omits the review-thread widget while watching without findings", () => {
   const { pi, messages } = fakePi();
   createFooterPublisher(pi).publish(state({ ...openPullRequest, watching: true }));
 
-  const widget = messages.find(
-    (message) => message.widget?.id === "pi-prs.review-threads",
-  )?.widget;
-  assert.ok(widget);
-  assert.equal(widget.content.text, "");
-  assert.equal(widget.icon.color, "text");
+  assert.deepEqual(
+    messages.map((message) => message.widget?.id),
+    ["pi-prs.number", "pi-prs.watching"],
+  );
 });
 
-test("publishes the CI widget only when a status exists", () => {
+test("publishes the CI failures widget only for failed checks", () => {
+  const url = "https://github.com/acme/repo/actions/runs/1";
   const { pi, messages } = fakePi();
   const footer = createFooterPublisher(pi);
+  const isCiWidget = (message: WidgetMessage) =>
+    message.widget?.id === "pi-prs.ci-failures";
 
-  footer.publish(state(openPullRequest));
-  assert.equal(
-    messages.some((message) => message.widget?.id === "pi-prs.ci"),
-    false,
-  );
+  for (const ci of [
+    undefined,
+    { state: "running" as const, url, failedCount: 0 },
+    { state: "okay" as const, url, failedCount: 0 },
+  ]) {
+    messages.length = 0;
+    footer.publish(state({ ...openPullRequest, ...(ci ? { ci } : {}) }));
+    assert.equal(messages.some(isCiWidget), false);
+  }
 
   messages.length = 0;
   footer.publish(
-    state({
-      ...openPullRequest,
-      ci: { state: "failed", url: "https://github.com/acme/repo/actions/runs/1" },
-    }),
+    state({ ...openPullRequest, ci: { state: "failed", url, failedCount: 3 } }),
   );
-  const ci = messages.find((message) => message.widget?.id === "pi-prs.ci");
-  assert.equal(ci?.widget?.content.text, "");
+  const ci = messages.find(isCiWidget);
+  assert.equal(ci?.widget?.content.text, "3");
   assert.equal(ci?.widget?.icon.color, "error");
-  assert.equal(
-    ci?.widget?.content.href,
-    "https://github.com/acme/repo/actions/runs/1",
+  assert.equal(ci?.widget?.content.href, url);
+  assert.deepEqual(ci?.widget?.layout, { row: 1, position: 5, align: "left" });
+});
+
+test("removes the CI failures widget once checks stop failing", () => {
+  const url = "https://github.com/acme/repo/actions/runs/1";
+  const { pi, messages } = fakePi();
+  const footer = createFooterPublisher(pi);
+
+  footer.publish(
+    state({ ...openPullRequest, ci: { state: "failed", url, failedCount: 1 } }),
+  );
+  messages.length = 0;
+
+  footer.publish(
+    state({ ...openPullRequest, ci: { state: "running", url, failedCount: 0 } }),
+  );
+  assert.deepEqual(
+    messages.filter((message) => message.type === "remove").map((m) => m.id),
+    ["pi-prs.ci-failures"],
   );
 });
 
@@ -163,7 +282,7 @@ test("omits invalid structured links without dropping widgets", () => {
     state({
       ...openPullRequest,
       target: { ...openPullRequest.target, url: "javascript:alert(1)" },
-      ci: { state: "running", url: "https://example.com/bad\nlink" },
+      ci: { state: "failed", url: "https://example.com/bad\nlink", failedCount: 1 },
     }),
   );
 
@@ -178,7 +297,12 @@ test("dims widgets while GitHub state is degraded", () => {
     ...state({
       ...openPullRequest,
       unresolvedThreadCount: 2,
-      ci: { state: "failed" as const, url: "https://example.com/check" },
+      watching: true,
+      ci: {
+        state: "failed" as const,
+        url: "https://example.com/check",
+        failedCount: 1,
+      },
     }),
     health: "error" as const,
   };
@@ -186,7 +310,7 @@ test("dims widgets while GitHub state is degraded", () => {
 
   assert.deepEqual(
     messages.map((message) => message.widget?.icon.color),
-    ["dim", "dim", "dim"],
+    ["dim", "dim", "dim", "dim"],
   );
 });
 
