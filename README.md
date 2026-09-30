@@ -78,9 +78,10 @@ resolve, and an outdated branch. All icons dim when GitHub state is degraded.
 
 The other icons each have their own shape:
 
-- The red ✕ and its count show failed CI checks and link to the first failure.
-  It appears only while checks fail, since the pull request icon already shows
-  pending checks.
+- The ✕ and its count show failed CI checks and link to the first failure. It
+  appears only while checks fail, since the pull request icon already shows
+  pending checks. It uses the footer's default icon color, because the red
+  pull request icon already signals the failure.
 - The comment icon and its count show unresolved review threads.
 - The eye appears alone while `/pr watch` is active. Like the comment icon, it
   uses the footer's default icon color, which you can change in `/fancy-footer`.

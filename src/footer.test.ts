@@ -190,14 +190,12 @@ test("shows watching as its own icon, distinct from threads and failures", () =>
   assert.equal(watching?.icon.color, undefined);
   assert.equal(watching?.layout.position, 6);
 
-  // The eye shares no glyph with the other icons, and unlike the failure
-  // icon it doesn't claim a state color.
+  // The eye shares no glyph with the other icons.
   const others = ["pi-prs.review-threads", "pi-prs.ci-failures"].map((id) => widgets.get(id));
   for (const other of others) {
     assert.notEqual(other?.icon.glyphs.nerd, watching?.icon.glyphs.nerd);
     assert.notEqual(other?.icon.glyphs.unicode, watching?.icon.glyphs.unicode);
   }
-  assert.notEqual(widgets.get("pi-prs.ci-failures")?.icon.color, watching?.icon.color);
 });
 
 test("keeps the review-thread count when watching stops", () => {
@@ -252,7 +250,8 @@ test("publishes the CI failures widget only for failed checks", () => {
   );
   const ci = messages.find(isCiWidget);
   assert.equal(ci?.widget?.content.text, "3");
-  assert.equal(ci?.widget?.icon.color, "error");
+  // Only the pull request icon carries the error color.
+  assert.equal(ci?.widget?.icon.color, undefined);
   assert.equal(ci?.widget?.content.href, url);
   assert.deepEqual(ci?.widget?.layout, { row: 1, position: 5, align: "left" });
 });
