@@ -1,0 +1,9 @@
+created: 2026-09-30
+title: Calmer footer failure colors
+intro: >-
+  This release makes the footer's failure signal less redundant. The pull request
+  icon is now the only icon that turns red when checks fail, and the failed-checks
+  icon follows the footer's default color.
+source:
+  mode: sync-stable-queue
+  previous_stable: v0.4.0

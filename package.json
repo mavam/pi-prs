@@ -1,6 +1,6 @@
 {
   "name": "pi-prs",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "Pull request review feedback and watching for pi",
   "type": "module",
   "files": [
