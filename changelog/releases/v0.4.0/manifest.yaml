@@ -1,0 +1,9 @@
+created: 2026-09-30
+title: Merge-readiness colors for pull requests
+intro: >-
+  The footer's pull request icon now shows whether a PR can merge, and the CI icon
+  appears only when checks fail, with a count of failures. The watching eye has its
+  own icon and no longer stands in for review threads.
+source:
+  mode: sync-stable-queue
+  previous_stable: v0.3.0
