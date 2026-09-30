@@ -186,7 +186,7 @@ test("shows watching as its own icon, distinct from threads and failures", () =>
 
   const watching = widgets.get("pi-prs.watching");
   assert.equal(watching?.content.text, "");
-  assert.equal(watching?.icon.color, "text");
+  assert.equal(watching?.icon.color, "muted");
   assert.equal(watching?.layout.position, 6);
 
   // The eye shares neither a glyph nor a color with the other icons.

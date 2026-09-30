@@ -141,7 +141,7 @@ function widgetsFor(state: PullRequestStateEvent): WidgetSpec[] {
     });
   }
 
-  // Watching is a session mode, so it gets its own neutral icon instead of
+  // Watching is a session mode, so it gets its own quiet icon instead of
   // borrowing the review-thread or CI slots.
   if (pullRequest.watching) {
     widgets.push({
@@ -152,7 +152,7 @@ function widgetsFor(state: PullRequestStateEvent): WidgetSpec[] {
       text: "",
       href: url,
       glyphs: GLYPHS.watching,
-      iconColor: degraded ? "dim" : "text",
+      iconColor: degraded ? "dim" : "muted",
       position: 6,
     });
   }
