@@ -77,6 +77,7 @@ function fakePi(scenario: Scenario): ExtensionAPI {
                         state: "OPEN",
                         isDraft: version > 1,
                         autoMergeRequest: version > 1 ? {} : null,
+                        mergeStateStatus: version > 1 ? "BLOCKED" : "CLEAN",
                         headRefOid: `oid-${version}`,
                         headRepositoryOwner: { login: "acme" },
                       },
@@ -192,11 +193,22 @@ test("poll cycles refresh pull request metadata", async () => {
     harness.states.map((state) => ({
       isDraft: state.pullRequest?.isDraft,
       autoMergeEnabled: state.pullRequest?.autoMergeEnabled,
+      mergeState: state.pullRequest?.mergeState,
       headRefOid: state.pullRequest?.headRefOid,
     })),
     [
-      { isDraft: false, autoMergeEnabled: false, headRefOid: "oid-1" },
-      { isDraft: true, autoMergeEnabled: true, headRefOid: "oid-2" },
+      {
+        isDraft: false,
+        autoMergeEnabled: false,
+        mergeState: "mergeable",
+        headRefOid: "oid-1",
+      },
+      {
+        isDraft: true,
+        autoMergeEnabled: true,
+        mergeState: "blocked",
+        headRefOid: "oid-2",
+      },
     ],
   );
   harness.poller.stop();

@@ -1,5 +1,5 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import type { PullRequestStateEvent } from "./api.ts";
+import type { PullRequestSnapshot, PullRequestStateEvent } from "./api.ts";
 
 /**
  * pi-fancy-footer's widget protocol, mirrored here so that pi-prs stays
@@ -11,7 +11,8 @@ const READY_CHANNEL = "pi-fancy-footer:ready";
 
 const NUMBER_WIDGET_ID = "pi-prs.number";
 const THREADS_WIDGET_ID = "pi-prs.review-threads";
-const CI_WIDGET_ID = "pi-prs.ci";
+const CI_FAILURES_WIDGET_ID = "pi-prs.ci-failures";
+const WATCHING_WIDGET_ID = "pi-prs.watching";
 
 type Glyphs = Record<"nerd" | "emoji" | "unicode" | "ascii", string>;
 
@@ -34,25 +35,22 @@ const GLYPHS = {
     unicode: "\u{25c9}",
     ascii: "o",
   },
-  ciRunning: {
-    nerd: "\u{f252}",
-    emoji: "\u{23f3}",
-    unicode: "\u{25f7}",
-    ascii: "~",
-  },
   ciFailed: {
     nerd: "\u{f057}",
     emoji: "\u{274c}",
     unicode: "\u{2715}",
     ascii: "x",
   },
-  ciOkay: {
-    nerd: "\u{f058}",
-    emoji: "\u{2705}",
-    unicode: "\u{2713}",
-    ascii: "+",
-  },
 } satisfies Record<string, Glyphs>;
+
+type IconColor =
+  | "text"
+  | "accent"
+  | "muted"
+  | "dim"
+  | "success"
+  | "warning"
+  | "error";
 
 interface WidgetSpec {
   id: string;
@@ -61,7 +59,7 @@ interface WidgetSpec {
   text: string;
   href?: string;
   glyphs: Glyphs;
-  iconColor: "text" | "accent" | "muted" | "dim" | "success" | "warning" | "error";
+  iconColor: IconColor;
   position: number;
 }
 
@@ -75,6 +73,25 @@ function safeHref(value: string): string | undefined {
   return /^https?:\/\/[^\s\u0000-\u001f\u007f-\u009f]+$/u.test(value)
     ? value
     : undefined;
+}
+
+/**
+ * The pull request icon summarizes whether the PR can merge: purple once
+ * merged, green when mergeable, yellow while checks run, red when blocked by
+ * conflicts, failed checks, or missing requirements, and dim for drafts.
+ */
+function pullRequestColor(pullRequest: PullRequestSnapshot): IconColor {
+  if (pullRequest.isDraft) return "dim";
+  if (pullRequest.lifecycle === "merged") return "accent";
+  if (
+    pullRequest.mergeState === "conflicting" ||
+    pullRequest.ci?.state === "failed"
+  ) {
+    return "error";
+  }
+  // Required checks that are still running also report as blocked.
+  if (pullRequest.ci?.state === "running") return "warning";
+  return pullRequest.mergeState === "blocked" ? "error" : "success";
 }
 
 function widgetsFor(state: PullRequestStateEvent): WidgetSpec[] {
@@ -91,56 +108,52 @@ function widgetsFor(state: PullRequestStateEvent): WidgetSpec[] {
       text: `${pullRequest.target.number}`,
       href: url,
       glyphs: GLYPHS.pullRequest,
-      iconColor: degraded
-        ? "dim"
-        : pullRequest.isDraft
-          ? "dim"
-          : pullRequest.lifecycle === "merged"
-            ? "accent"
-            : pullRequest.autoMergeEnabled
-              ? "warning"
-              : "success",
+      iconColor: degraded ? "dim" : pullRequestColor(pullRequest),
       position: 3,
     },
   ];
 
-  if (pullRequest.unresolvedThreadCount > 0 || pullRequest.watching) {
+  if (pullRequest.unresolvedThreadCount > 0) {
     widgets.push({
       id: THREADS_WIDGET_ID,
       label: "PR review threads",
-      description: "Shows unresolved review threads and active pull request watching",
-      text:
-        pullRequest.unresolvedThreadCount > 0
-          ? `${pullRequest.unresolvedThreadCount}`
-          : "",
+      description: "Shows unresolved review threads on the pull request",
+      text: `${pullRequest.unresolvedThreadCount}`,
       href: url,
-      glyphs: pullRequest.watching ? GLYPHS.watching : GLYPHS.reviewThreads,
+      glyphs: GLYPHS.reviewThreads,
       iconColor: degraded ? "dim" : "text",
       position: 4,
     });
   }
 
-  if (pullRequest.ci) {
+  // Only failures get a widget; the pull request icon already shows whether
+  // checks are running or passing. The count and link go to the failed checks.
+  if (pullRequest.ci?.state === "failed") {
     widgets.push({
-      id: CI_WIDGET_ID,
-      label: "PR CI status",
-      description: "Shows the CI status for the current pull request",
-      text: "",
+      id: CI_FAILURES_WIDGET_ID,
+      label: "PR CI failures",
+      description: "Shows the number of failed CI checks on the pull request",
+      text: `${Math.max(1, pullRequest.ci.failedCount)}`,
       href: safeHref(pullRequest.ci.url),
-      glyphs:
-        pullRequest.ci.state === "failed"
-          ? GLYPHS.ciFailed
-          : pullRequest.ci.state === "running"
-            ? GLYPHS.ciRunning
-            : GLYPHS.ciOkay,
-      iconColor: degraded
-        ? "dim"
-        : pullRequest.ci.state === "failed"
-          ? "error"
-          : pullRequest.ci.state === "running"
-            ? "warning"
-            : "success",
+      glyphs: GLYPHS.ciFailed,
+      iconColor: degraded ? "dim" : "error",
       position: 5,
+    });
+  }
+
+  // Watching is a session mode, so it gets its own neutral icon instead of
+  // borrowing the review-thread or CI slots.
+  if (pullRequest.watching) {
+    widgets.push({
+      id: WATCHING_WIDGET_ID,
+      label: "PR watching",
+      description:
+        "Shows that pi is watching the pull request for reviews and CI failures",
+      text: "",
+      href: url,
+      glyphs: GLYPHS.watching,
+      iconColor: degraded ? "dim" : "text",
+      position: 6,
     });
   }
 

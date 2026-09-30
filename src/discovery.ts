@@ -1,5 +1,9 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import type { PullRequestLifecycle, PullRequestTarget } from "./api.ts";
+import type {
+  PullRequestLifecycle,
+  PullRequestMergeState,
+  PullRequestTarget,
+} from "./api.ts";
 import { gh, git, isAuthFailure } from "./exec.ts";
 
 export interface GitHubRepositoryRef {
@@ -14,6 +18,7 @@ export interface DiscoveredPullRequest {
   lifecycle: PullRequestLifecycle;
   isDraft: boolean;
   autoMergeEnabled: boolean;
+  mergeState: PullRequestMergeState;
   headRefOid: string;
 }
 
@@ -49,6 +54,7 @@ interface CandidateNode {
   state?: unknown;
   isDraft?: unknown;
   autoMergeRequest?: unknown;
+  mergeStateStatus?: unknown;
   headRefOid?: unknown;
   headRepositoryOwner?: { login?: unknown } | null;
 }
@@ -59,6 +65,7 @@ const PULL_REQUEST_FIELDS = [
   "state",
   "isDraft",
   "autoMergeRequest { enabledAt }",
+  "mergeStateStatus",
   "headRefOid",
   "headRepositoryOwner { login }",
 ].join(" ");
@@ -230,6 +237,26 @@ export function parseLifecycle(
     : undefined;
 }
 
+/** Map GitHub's `mergeStateStatus` onto the states the footer distinguishes. */
+export function parseMergeState(value: unknown): PullRequestMergeState {
+  if (typeof value !== "string") return "unknown";
+  switch (value.toUpperCase()) {
+    // UNSTABLE means only non-required checks fail; GitHub still allows merging.
+    case "CLEAN":
+    case "HAS_HOOKS":
+    case "UNSTABLE":
+      return "mergeable";
+    case "DIRTY":
+      return "conflicting";
+    case "BLOCKED":
+    case "BEHIND":
+    case "DRAFT":
+      return "blocked";
+    default:
+      return "unknown";
+  }
+}
+
 function toDiscovered(
   node: CandidateNode,
   fallbackHost: string,
@@ -252,6 +279,7 @@ function toDiscovered(
     isDraft: node.isDraft === true,
     autoMergeEnabled:
       typeof node.autoMergeRequest === "object" && node.autoMergeRequest !== null,
+    mergeState: parseMergeState(node.mergeStateStatus),
     headRefOid: typeof node.headRefOid === "string" ? node.headRefOid : "",
     headOwner:
       typeof node.headRepositoryOwner?.login === "string"
@@ -412,7 +440,7 @@ export async function discoverPullRequest(
 
   const fallback = await gh(
     pi,
-    ["pr", "view", "--json", "number,url,headRefOid,state,isDraft,autoMergeRequest"],
+    ["pr", "view", "--json", "number,url,headRefOid,state,isDraft,autoMergeRequest,mergeStateStatus"],
     cwd,
   );
   if (isAuthFailure(fallback)) authFailed = true;

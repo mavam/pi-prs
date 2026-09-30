@@ -52,6 +52,7 @@ test("footer status keeps a failed PR check when a later check passes", () => {
     {
       state: "failed",
       url: "https://github.com/org/repo/actions/runs/1/job/1",
+      failedCount: 1,
     },
   );
 });
@@ -76,6 +77,7 @@ test("footer status reports running when no PR check failed", () => {
     {
       state: "running",
       url: "https://github.com/org/repo/actions/runs/4/job/4",
+      failedCount: 0,
     },
   );
 });
@@ -97,14 +99,30 @@ test("footer status reports okay for passing and skipped checks", () => {
         createdAt: "2026-01-01T10:30:00Z",
       },
     ]),
-    { state: "okay", url: "https://ci.example.com/check/6" },
+    { state: "okay", url: "https://ci.example.com/check/6", failedCount: 0 },
   );
 });
 
 test("footer status treats cancelled checks as failed", () => {
   assert.deepEqual(
     status([run("CANCELLED", "", "2026-01-01T10:00:00Z", "2026-01-01T10:01:00Z")]),
-    { state: "failed", url: PR_URL },
+    { state: "failed", url: PR_URL, failedCount: 1 },
+  );
+});
+
+test("footer status counts every failed and canceled check", () => {
+  const started = "2026-01-01T09:00:00Z";
+  const done = "2026-01-01T09:30:00Z";
+  const job = (id: number) => `https://github.com/org/repo/actions/runs/${id}/job/${id}`;
+  assert.deepEqual(
+    status([
+      run("FAILURE", job(1), started, done),
+      run("TIMED_OUT", job(2), started, done),
+      run("CANCELLED", job(3), started, done),
+      run("SUCCESS", job(4), started, done),
+      run("", job(5), started, "", "IN_PROGRESS"),
+    ]),
+    { state: "failed", url: job(1), failedCount: 3 },
   );
 });
 

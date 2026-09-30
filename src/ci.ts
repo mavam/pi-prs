@@ -35,7 +35,11 @@ function selectStatus(
     newest.find((check) => check.state === "running") ??
     newest[0];
   return selected
-    ? { state: selected.state, url: selected.url || pullRequestUrl }
+    ? {
+        state: selected.state,
+        url: selected.url || pullRequestUrl,
+        failedCount: checks.filter((check) => check.state === "failed").length,
+      }
     : undefined;
 }
 

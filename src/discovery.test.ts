@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   createRepositoryContext,
+  parseMergeState,
   parsePullRequestUrl,
   parsePullRequestView,
   selectPullRequestFromGraphQL,
@@ -96,6 +97,7 @@ test("parsePullRequestView reads state, draft, and auto-merge status", () => {
         state: "OPEN",
         isDraft: true,
         autoMergeRequest: { enabledAt: "2026-07-26T08:00:00Z" },
+        mergeStateStatus: "BLOCKED",
         headRefOid: "abc123",
       }),
     ),
@@ -110,10 +112,31 @@ test("parsePullRequestView reads state, draft, and auto-merge status", () => {
       lifecycle: "open",
       isDraft: true,
       autoMergeEnabled: true,
+      mergeState: "blocked",
       headRefOid: "abc123",
       headOwner: "",
     },
   );
+});
+
+test("parseMergeState maps GitHub merge states", () => {
+  const cases = [
+    ["CLEAN", "mergeable"],
+    ["HAS_HOOKS", "mergeable"],
+    ["UNSTABLE", "mergeable"],
+    ["clean", "mergeable"],
+    ["DIRTY", "conflicting"],
+    ["BLOCKED", "blocked"],
+    ["BEHIND", "blocked"],
+    ["DRAFT", "blocked"],
+    ["UNKNOWN", "unknown"],
+    ["SOMETHING_NEW", "unknown"],
+    [undefined, "unknown"],
+    [null, "unknown"],
+  ] as const;
+  for (const [value, expected] of cases) {
+    assert.equal(parseMergeState(value), expected, String(value));
+  }
 });
 
 test("parsePullRequestView keeps closed pull requests", () => {
@@ -147,6 +170,7 @@ test("selectPullRequestFromGraphQL accepts only known head owners", () => {
               state: "OPEN",
               isDraft: true,
               autoMergeRequest: { enabledAt: "2026-07-26T08:00:00Z" },
+              mergeStateStatus: "CLEAN",
               headRepositoryOwner: { login: "me" },
             },
           ],
@@ -178,6 +202,7 @@ test("selectPullRequestFromGraphQL accepts only known head owners", () => {
       lifecycle: "open",
       isDraft: true,
       autoMergeEnabled: true,
+      mergeState: "mergeable",
       headRefOid: "",
     },
   );

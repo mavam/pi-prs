@@ -22,11 +22,23 @@ export interface PullRequestTarget {
 
 export type PullRequestLifecycle = "open" | "merged" | "closed";
 export type PullRequestCiState = "running" | "failed" | "okay";
+/**
+ * Whether GitHub allows merging: `mergeable` when nothing prevents it,
+ * `conflicting` for merge conflicts, `blocked` for missing approvals, required
+ * checks, or an outdated branch, and `unknown` while GitHub still computes it.
+ */
+export type PullRequestMergeState =
+  | "mergeable"
+  | "blocked"
+  | "conflicting"
+  | "unknown";
 export type PullRequestHealth = "ok" | "unauthenticated" | "error";
 
 export interface PullRequestCiStatus {
   state: PullRequestCiState;
   url: string;
+  /** Checks that failed, including canceled ones; 0 unless `state` is "failed". */
+  failedCount: number;
 }
 
 export interface PullRequestSnapshot {
@@ -34,6 +46,7 @@ export interface PullRequestSnapshot {
   lifecycle: PullRequestLifecycle;
   isDraft: boolean;
   autoMergeEnabled: boolean;
+  mergeState: PullRequestMergeState;
   headRefOid: string;
   ci?: PullRequestCiStatus;
   unresolvedThreadCount: number;
