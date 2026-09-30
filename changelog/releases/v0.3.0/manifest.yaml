@@ -1,0 +1,8 @@
+created: 2026-09-30
+title: Distinct pull request footer colors
+intro: >-
+  Pull request footer colors now distinguish open, auto-merge, and merged states.
+  The watching eye stays neutral so you can identify pull request state at a glance.
+source:
+  mode: sync-stable-queue
+  previous_stable: v0.2.0
