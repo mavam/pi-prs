@@ -532,6 +532,48 @@ test("canceled, skipped, pending, and green checks never trigger turns", async (
   h.poller.stop();
 });
 
+for (const watching of [false, true]) {
+  test(`superseded failures clear after a rerun (${watching ? "watching" : "idle"})`, async () => {
+    const h = harness();
+    if (watching) {
+      await h.poller.watch("/repo");
+    } else {
+      h.poller.start("/repo");
+      await until(() => h.states.length === 1);
+    }
+    assert.equal(h.states.at(-1)?.pullRequest?.ci?.failedCount, 1);
+    const delivered = h.events.length;
+    const logs = h.logCalls();
+    h.state.checks.push({
+      ...check("test", 2, "SUCCESS"),
+      startedAt: "2026-01-01T11:00:00Z",
+      completedAt: "2026-01-01T11:01:00Z",
+    });
+    await h.tick();
+    assert.equal(h.states.at(-1)?.health, "ok");
+    assert.equal(h.states.at(-1)?.pullRequest?.ci?.state, "okay");
+    assert.equal(h.states.at(-1)?.pullRequest?.ci?.failedCount, 0);
+    if (watching) await h.poller.watch("/repo");
+    assert.equal(h.events.length, delivered);
+    assert.equal(h.logCalls(), logs);
+    h.poller.stop();
+  });
+}
+
+test("watch does not deliver failures superseded before watching begins", async () => {
+  const h = harness();
+  h.state.checks.push({
+    ...check("test", 2, "SUCCESS"),
+    startedAt: "2026-01-01T11:00:00Z",
+    completedAt: "2026-01-01T11:01:00Z",
+  });
+  await h.poller.watch("/repo");
+  assert.equal(h.states.at(-1)?.pullRequest?.ci?.state, "okay");
+  assert.equal(h.events.length, 0);
+  assert.equal(h.logCalls(), 0);
+  h.poller.stop();
+});
+
 test("stale snapshots and closed pull requests do not inject", async () => {
   const h = harness();
   h.state.checksHead = "old-head";

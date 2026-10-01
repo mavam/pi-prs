@@ -38,9 +38,11 @@ links. Diagnostics cover at most three jobs per batch, with up to 80 lines or
 
 Each failed execution is delivered once while you stay on the same pull request
 in the session, including across `/pr unwatch` and `/pr watch`. Failed reruns and
-failures on new commits are delivered again. Canceled checks and checks awaiting
-approval show as failed in the footer but don't start agent turns; neither do
-skipped or passing checks. Large sets of failures arrive in batches of up to 20
+failures on new commits are delivered again. Only the latest execution of each
+named check within a workflow contributes to CI status and feedback. Successful
+reruns clear superseded failures from the footer. Canceled checks and checks
+awaiting approval show as failed in the footer but don't start agent turns;
+neither do skipped or passing checks. Large sets of failures arrive in batches of up to 20
 checks, and failures from superseded commits are discarded. Checks with
 incomplete or unfamiliar statuses stay pending without hiding other failures.
 GitHub read errors retain the last known CI status and slow polling until reads
