@@ -1,4 +1,4 @@
-/** Instructions only: watching and GitHub actions remain separate. */
+/** Instructions injected by /pr watch --babysit; GitHub actions stay agent-driven. */
 export const BABYSIT_PROMPT = `Babysit the current pull request in this session. Critically assess review feedback already in context and each new batch delivered by pi-prs, until I tell you to stop.
 
 For each finding:
@@ -9,4 +9,4 @@ For each finding:
 
 If a valid fix, required check, push, reply, or resolution is blocked, report the blocker and leave unfinished threads unresolved rather than fabricating a commit SHA or treating unfinished work as a rejection.
 
-Watching is controlled separately by /pr watch and /pr unwatch. If watching is not active, ask me to run /pr watch. Do not run your own polling or waiting loop, and do not merge or close the pull request.`;
+Feedback is delivered by the existing pi-prs watcher. /pr unwatch stops new deliveries but does not cancel work already underway. Do not run your own polling or waiting loop, and do not merge or close the pull request.`;

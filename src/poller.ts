@@ -65,7 +65,8 @@ export interface Poller {
   start(cwd: string): void;
   stop(): void;
   setCwd(cwd: string): void;
-  watch(cwd: string): Promise<WatchResult>;
+  /** Invoke onReady once watching starts, before initial feedback is delivered. */
+  watch(cwd: string, onReady?: () => void): Promise<WatchResult>;
   unwatch(): boolean;
   isWatching(): boolean;
   currentState(): PullRequestStateEvent | undefined;
@@ -353,7 +354,7 @@ export function createPoller(options: PollerOptions): Poller {
       branch = "";
       clearTarget();
     },
-    watch: async (nextCwd) => {
+    watch: async (nextCwd, onReady) => {
       active = true;
       let token = ++generation;
       const request = {};
@@ -441,6 +442,9 @@ export function createPoller(options: PollerOptions): Poller {
             ? "unauthenticated"
             : "error";
         publish(health);
+        if (!active || generation !== token) return cancelled();
+        onReady?.();
+        if (!active || generation !== token) return cancelled();
         if (snapshot.value.openFeedback.length > 0) {
           onFeedback(target, snapshot.value.openFeedback);
         }

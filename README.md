@@ -57,17 +57,16 @@ stops automatically when the pull request closes or merges.
 
 ### Babysit review feedback
 
-Inject a prompt that asks pi to assess and handle review feedback:
+Start watching with a prompt that asks pi to assess and handle review feedback:
 
 ```text
-/pr babysit
-/pr watch
+/pr watch --babysit
 ```
 
-`/pr babysit` adds a normal user message to the conversation. It starts an agent
-turn when idle or steers the agent when busy; it doesn't start watching or
-perform GitHub actions itself. Use `/pr watch` to deliver existing and new
-feedback.
+Once watching starts, `--babysit` adds a normal user message before the initial
+review feedback and CI failures are delivered. It starts an agent turn when idle
+or steers the agent when busy. Plain `/pr watch` delivers feedback without adding
+the prompt; the extension doesn't perform GitHub actions itself.
 
 The prompt instructs the agent to:
 
