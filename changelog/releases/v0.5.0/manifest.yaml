@@ -1,0 +1,9 @@
+created: 2026-10-01
+title: Prompt-backed pull request babysitting
+intro: >-
+  You can now use `/pr watch --babysit` to ask pi to assess review feedback, fix valid
+  findings, and reply before resolving threads. CI footers also recover after successful
+  reruns.
+source:
+  mode: sync-stable-queue
+  previous_stable: v0.4.1
