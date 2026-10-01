@@ -8,6 +8,7 @@ import {
   isCiFailureEvent,
   isFeedbackEvent,
 } from "./api.ts";
+import { BABYSIT_PROMPT } from "./babysit.ts";
 import {
   CI_FAILURE_MESSAGE_TYPE,
   formatCiFailureMessage,
@@ -19,7 +20,7 @@ import { loadHtmlConverter } from "./markdown.ts";
 import { FEEDBACK_MESSAGE_TYPE, registerFeedbackRenderer } from "./message.ts";
 import { createPoller } from "./poller.ts";
 
-const USAGE = "Usage: /pr watch | /pr unwatch";
+const USAGE = "Usage: /pr watch [--babysit] | /pr unwatch";
 
 export default async function (pi: ExtensionAPI) {
   await loadHtmlConverter();
@@ -86,13 +87,18 @@ export default async function (pi: ExtensionAPI) {
 
   pi.registerCommand("pr", {
     description:
-      "Watch the current pull request for review feedback and CI failures",
+      "Watch pull request feedback and CI failures, optionally with babysitting instructions",
     getArgumentCompletions: (prefix) => {
       const options = [
         {
           value: "watch",
           label: "watch",
           description: "Load review feedback and CI failures, then watch",
+        },
+        {
+          value: "watch --babysit",
+          label: "watch --babysit",
+          description: "Watch and assess feedback, fix valid findings, reply and resolve",
         },
         { value: "unwatch", label: "unwatch", description: "Stop watching" },
       ];
@@ -116,12 +122,18 @@ export default async function (pi: ExtensionAPI) {
         return;
       }
 
-      if (action !== "watch" || words.length !== 1) {
+      const babysit = words.length === 2 && words[1] === "--babysit";
+      if (action !== "watch" || (words.length !== 1 && !babysit)) {
         ctx.ui.notify(USAGE, action ? "warning" : "info");
         return;
       }
 
-      const result = await poller.watch(ctx.cwd);
+      const result = await poller.watch(
+        ctx.cwd,
+        babysit
+          ? () => pi.sendUserMessage(BABYSIT_PROMPT, { deliverAs: "steer" })
+          : undefined,
+      );
       if (!result.ok) {
         ctx.ui.notify(`Cannot watch pull request: ${result.error}`, "error");
         return;

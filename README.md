@@ -57,6 +57,34 @@ Stop watching:
 This stops both review and CI feedback; footer updates continue. Watching also
 stops automatically when the pull request closes or merges.
 
+### Babysit review feedback
+
+Start watching with a prompt that asks pi to assess and handle review feedback:
+
+```text
+/pr watch --babysit
+```
+
+Once watching starts, `--babysit` adds a normal user message before the initial
+review feedback and CI failures are delivered. It starts an agent turn when idle
+or steers the agent when busy. Plain `/pr watch` delivers feedback without adding
+the prompt; the extension doesn't perform GitHub actions itself.
+
+The prompt instructs the agent to:
+
+- Critically verify each finding against the current code and intended behavior.
+- Fix valid findings, run relevant checks, and commit and push according to the
+  repository's workflow.
+- Reply on GitHub with the addressing commit SHA or an evidence-based rejection
+  reason, then resolve the review thread after the reply succeeds.
+- Report blockers and leave unfinished threads unresolved. Comments without
+  review threads receive replies but cannot be resolved.
+
+These are instructions for the agent, not an enforced automation policy. They
+apply to feedback already in context and future feedback in this session until
+you tell the agent to stop. `/pr unwatch` stops new deliveries; it doesn't retract
+the prompt or cancel work already underway.
+
 ## 🧩 Footer widgets
 
 When [pi-fancy-footer](https://github.com/mavam/pi-fancy-footer) is installed,
