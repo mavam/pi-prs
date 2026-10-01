@@ -8,6 +8,7 @@ import {
   isCiFailureEvent,
   isFeedbackEvent,
 } from "./api.ts";
+import { BABYSIT_PROMPT } from "./babysit.ts";
 import {
   CI_FAILURE_MESSAGE_TYPE,
   formatCiFailureMessage,
@@ -19,7 +20,7 @@ import { loadHtmlConverter } from "./markdown.ts";
 import { FEEDBACK_MESSAGE_TYPE, registerFeedbackRenderer } from "./message.ts";
 import { createPoller } from "./poller.ts";
 
-const USAGE = "Usage: /pr watch | /pr unwatch";
+const USAGE = "Usage: /pr watch | /pr unwatch | /pr babysit";
 
 export default async function (pi: ExtensionAPI) {
   await loadHtmlConverter();
@@ -86,7 +87,7 @@ export default async function (pi: ExtensionAPI) {
 
   pi.registerCommand("pr", {
     description:
-      "Watch the current pull request for review feedback and CI failures",
+      "Watch pull request feedback and CI failures, or inject a babysitting prompt",
     getArgumentCompletions: (prefix) => {
       const options = [
         {
@@ -95,6 +96,11 @@ export default async function (pi: ExtensionAPI) {
           description: "Load review feedback and CI failures, then watch",
         },
         { value: "unwatch", label: "unwatch", description: "Stop watching" },
+        {
+          value: "babysit",
+          label: "babysit",
+          description: "Assess feedback, fix valid findings, reply and resolve",
+        },
       ];
       const matches = options.filter((option) =>
         option.value.startsWith(prefix),
@@ -104,6 +110,11 @@ export default async function (pi: ExtensionAPI) {
     handler: async (args, ctx) => {
       const words = args.trim().split(/\s+/).filter(Boolean);
       const action = words[0];
+
+      if (action === "babysit" && words.length === 1) {
+        pi.sendUserMessage(BABYSIT_PROMPT, { deliverAs: "steer" });
+        return;
+      }
 
       if (action === "unwatch" && words.length === 1) {
         const stopped = poller.unwatch();
