@@ -256,24 +256,33 @@ test("publishes the CI failures widget only for failed checks", () => {
   assert.deepEqual(ci?.widget?.layout, { row: 1, position: 5, align: "left" });
 });
 
-test("removes the CI failures widget once checks stop failing", () => {
-  const url = "https://github.com/acme/repo/actions/runs/1";
-  const { pi, messages } = fakePi();
-  const footer = createFooterPublisher(pi);
+for (const ciState of ["running", "okay"] as const) {
+  test(`removes CI failures and recolors the PR once checks are ${ciState}`, () => {
+    const url = "https://github.com/acme/repo/actions/runs/1";
+    const { pi, messages } = fakePi();
+    const footer = createFooterPublisher(pi);
 
-  footer.publish(
-    state({ ...openPullRequest, ci: { state: "failed", url, failedCount: 1 } }),
-  );
-  messages.length = 0;
+    footer.publish(
+      state({ ...openPullRequest, ci: { state: "failed", url, failedCount: 1 } }),
+    );
+    messages.length = 0;
 
-  footer.publish(
-    state({ ...openPullRequest, ci: { state: "running", url, failedCount: 0 } }),
-  );
-  assert.deepEqual(
-    messages.filter((message) => message.type === "remove").map((m) => m.id),
-    ["pi-prs.ci-failures"],
-  );
-});
+    footer.publish(
+      state({ ...openPullRequest, ci: { state: ciState, url, failedCount: 0 } }),
+    );
+    assert.deepEqual(
+      messages.filter((message) => message.type === "remove").map((m) => m.id),
+      ["pi-prs.ci-failures"],
+    );
+    const number = messages.find(
+      (message) => message.widget?.id === "pi-prs.number",
+    );
+    assert.equal(
+      number?.widget?.icon.color,
+      ciState === "okay" ? "success" : "warning",
+    );
+  });
+}
 
 test("omits invalid structured links without dropping widgets", () => {
   const { pi, messages } = fakePi();

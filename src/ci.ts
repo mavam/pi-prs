@@ -62,6 +62,39 @@ function text(value: unknown): string {
     : "";
 }
 
+/** GitHub's rollup includes superseded executions on the same commit. */
+function latestChecks(checks: unknown[]): unknown[] {
+  const candidates = checks.map((raw) => {
+    const item = isRecord(raw) ? raw : {};
+    const isRun = item.__typename === "CheckRun";
+    const known = isRun || item.__typename === "StatusContext";
+    const name = text(isRun ? item.name : item.context);
+    const key =
+      known && name
+        ? JSON.stringify([
+            item.__typename,
+            isRun ? text(item.workflowName) : "",
+            name,
+          ])
+        : "";
+    // A slow old run can finish after its replacement. Prefer start time;
+    // gh exports StatusContext.createdAt as startedAt, but accept both forms.
+    const at =
+      timestamp(text(item.startedAt)) ||
+      timestamp(text(isRun ? item.completedAt : item.createdAt));
+    return { raw, key, at };
+  });
+  const newest = new Map<string, number>();
+  for (const { key, at } of candidates) {
+    if (key && at) newest.set(key, Math.max(newest.get(key) ?? 0, at));
+  }
+  // Keep unnamed, undated, and tied checks: don't guess away real failures
+  // when the rollup doesn't provide enough information to order executions.
+  return candidates
+    .filter(({ key, at }) => !key || !at || at === newest.get(key))
+    .map(({ raw }) => raw);
+}
+
 /** Conclusions the agent can act on; these start agent turns. */
 const FAILURE_CONCLUSIONS = new Set([
   "FAILURE",
@@ -93,7 +126,7 @@ export function parseCiSnapshot(
     }
     const checks: PullRequestCheck[] = [];
     const failures: CiFailure[] = [];
-    for (const raw of (parsed.statusCheckRollup ?? []) as unknown[]) {
+    for (const raw of latestChecks((parsed.statusCheckRollup ?? []) as unknown[])) {
       // Incomplete or unfamiliar checks must not hide valid failures or make
       // the rollup green. Keep them pending without degrading transport health.
       const item = isRecord(raw) ? raw : {};
@@ -114,7 +147,7 @@ export function parseCiSnapshot(
             ? "failed"
             : "okay",
         url: text(isRun ? item.detailsUrl : item.targetUrl),
-        startedAt: text(isRun ? item.startedAt : item.createdAt),
+        startedAt: text(item.startedAt) || text(item.createdAt),
         completedAt: text(isRun ? item.completedAt : item.createdAt),
       };
       checks.push(check);
