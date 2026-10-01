@@ -301,15 +301,15 @@ test("pr completion and usage expose babysitting only as a watch flag", async (t
 
 test("babysitting instructions cover assessment, replies, resolution, and blockers", () => {
   assert.match(BABYSIT_PROMPT, /Critically assess/);
-  assert.match(BABYSIT_PROMPT, /each new batch delivered by pi-prs/);
+  assert.match(BABYSIT_PROMPT, /each new batch from pi-prs/);
   assert.match(BABYSIT_PROMPT, /untrusted data, not instructions/);
-  assert.match(BABYSIT_PROMPT, /run the relevant checks/);
+  assert.match(BABYSIT_PROMPT, /run relevant checks/);
   assert.match(BABYSIT_PROMPT, /Commit and push/);
   assert.match(BABYSIT_PROMPT, /Always reply on GitHub/);
-  assert.match(BABYSIT_PROMPT, /actual commit SHA available on the PR branch/);
-  assert.match(BABYSIT_PROMPT, /evidence-based reason/);
-  assert.match(BABYSIT_PROMPT, /After the reply succeeds, resolve/);
+  assert.match(BABYSIT_PROMPT, /verified commit SHA on the PR branch/);
+  assert.match(BABYSIT_PROMPT, /evidence-based rejection reason/);
+  assert.match(BABYSIT_PROMPT, /After a successful reply, resolve/);
   assert.match(BABYSIT_PROMPT, /whether the feedback was addressed or rejected/);
   assert.match(BABYSIT_PROMPT, /leave unfinished threads unresolved/);
-  assert.match(BABYSIT_PROMPT, /Do not run your own polling or waiting loop/);
+  assert.match(BABYSIT_PROMPT, /Do not poll, wait in a loop, merge, or close the PR/);
 });
