@@ -3,6 +3,8 @@ title: Concise babysitting prompt
 type: bugfix
 authors:
   - mavam
+prs:
+  - 9
 created: 2026-10-02T10:29:21.793557Z
 ---
 
