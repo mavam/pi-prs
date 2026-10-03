@@ -28,7 +28,7 @@ const event: CiFailureEvent = {
   ],
 };
 
-test("CI events use steering delivery, compact rendering, and session cleanup", async () => {
+test("CI events use follow-up delivery, compact rendering, and session cleanup", async () => {
   const listeners = new Map<string, (raw: unknown) => void>();
   const lifecycle = new Map<string, (...args: any[]) => void>();
   const renderers = new Map<string, (...args: any[]) => any>();
@@ -63,7 +63,7 @@ test("CI events use steering delivery, compact rendering, and session cleanup", 
   const { message, options } = messages[0]!;
   assert.equal(message.customType, CI_FAILURE_MESSAGE_TYPE);
   assert.equal(message.display, true);
-  assert.deepEqual(options, { deliverAs: "steer", triggerTurn: true });
+  assert.deepEqual(options, { deliverAs: "followUp", triggerTurn: true });
   assert.match(message.content, /expected true, got false/);
 
   const theme = {

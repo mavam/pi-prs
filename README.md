@@ -26,8 +26,8 @@ Start watching that pull request for review feedback and CI failures:
 
 The extension sends unresolved review feedback and current CI failures to pi,
 then checks GitHub every 30 seconds for new comments, reviews, and failed checks.
-New feedback starts an agent turn when pi is idle or steers its next turn when
-it's busy.
+New feedback starts an agent turn when pi is idle or queues a follow-up when
+it's busy, without interrupting its current work.
 
 CI messages include the commit, failed check names, and links. GitHub Actions
 failures also include short diagnostic excerpts as soon as the failed job
@@ -67,8 +67,8 @@ Start watching with a prompt that asks pi to assess and handle review feedback:
 
 Once watching starts, `--babysit` adds a normal user message before the initial
 review feedback and CI failures are delivered. It starts an agent turn when idle
-or steers the agent when busy. Plain `/pr watch` delivers feedback without adding
-the prompt; the extension doesn't perform GitHub actions itself.
+or queues the prompt as a follow-up when busy. Plain `/pr watch` delivers feedback
+without adding the prompt; the extension doesn't perform GitHub actions itself.
 
 The prompt instructs the agent to:
 
@@ -140,7 +140,7 @@ export default function (pi) {
 ```
 
 Publishing a `pi-prs:feedback` or `pi-prs:ci-failure` event yourself sends that
-feedback to pi as a steering message.
+feedback to pi as a follow-up when it's busy or starts a turn when it's idle.
 
 ## 🧰 Requirements
 
