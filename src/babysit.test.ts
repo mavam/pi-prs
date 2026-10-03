@@ -15,6 +15,7 @@ type Command = Parameters<ExtensionAPI["registerCommand"]>[1];
 async function setup(t: TestContext) {
   let command: Command | undefined;
   const messages: Parameters<ExtensionAPI["sendUserMessage"]>[] = [];
+  const customMessages: Parameters<ExtensionAPI["sendMessage"]>[] = [];
   const deliveries: string[] = [];
   const notifications: Array<{ text: string; type: string }> = [];
   const execCalls: string[] = [];
@@ -71,8 +72,9 @@ async function setup(t: TestContext) {
       messages.push(args);
       deliveries.push("prompt");
     },
-    sendMessage: (message: { customType: string }) => {
-      deliveries.push(message.customType);
+    sendMessage: (...args: Parameters<ExtensionAPI["sendMessage"]>) => {
+      customMessages.push(args);
+      deliveries.push(args[0].customType);
     },
     exec: async (name: string, args: string[]) => {
       execCalls.push(`${name} ${args.join(" ")}`);
@@ -172,21 +174,26 @@ async function setup(t: TestContext) {
   const start = () => lifecycle.get("session_start")!({}, context());
 
   return {
-    command, context, start, state, messages, deliveries, notifications, execCalls, pi,
+    command, context, start, state, messages, customMessages, deliveries, notifications, execCalls, pi,
   };
 }
 
 for (const idle of [true, false]) {
-  test(`watch --babysit injects the prompt before feedback when ${idle ? "idle" : "busy"}`, async (t) => {
-    const { command, context, start, state, messages, deliveries } = await setup(t);
+  test(`watch --babysit uses follow-ups and delivers the prompt first when ${idle ? "idle" : "busy"}`, async (t) => {
+    const {
+      command, context, start, state, messages, customMessages, deliveries,
+    } = await setup(t);
     state.ciFailure = true;
     start();
     await command.handler("  watch   --babysit  ", context(idle));
 
-    assert.deepEqual(messages, [[BABYSIT_PROMPT, { deliverAs: "steer" }]]);
+    assert.deepEqual(messages, [[BABYSIT_PROMPT, { deliverAs: "followUp" }]]);
     assert.deepEqual(deliveries, [
       "prompt", FEEDBACK_MESSAGE_TYPE, CI_FAILURE_MESSAGE_TYPE,
     ]);
+    for (const [, options] of customMessages) {
+      assert.deepEqual(options, { deliverAs: "followUp", triggerTurn: true });
+    }
   });
 }
 

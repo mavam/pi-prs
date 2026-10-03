@@ -64,12 +64,12 @@ export default async function (pi: ExtensionAPI) {
         display: true,
         details: raw,
       },
-      { deliverAs: "steer", triggerTurn: true },
+      { deliverAs: "followUp", triggerTurn: true },
     );
   });
 
   // Any extension may publish review feedback on this channel; pi-prs turns it
-  // into a steering message for the agent.
+  // into a follow-up message for the agent.
   const stopFeedbackListener = pi.events.on(PI_PR_FEEDBACK_CHANNEL, (raw) => {
     if (!sessionActive || !isFeedbackEvent(raw) || raw.feedback.length === 0) {
       return;
@@ -81,7 +81,7 @@ export default async function (pi: ExtensionAPI) {
         display: true,
         details: raw,
       },
-      { deliverAs: "steer", triggerTurn: true },
+      { deliverAs: "followUp", triggerTurn: true },
     );
   });
 
@@ -131,7 +131,7 @@ export default async function (pi: ExtensionAPI) {
       const result = await poller.watch(
         ctx.cwd,
         babysit
-          ? () => pi.sendUserMessage(BABYSIT_PROMPT, { deliverAs: "steer" })
+          ? () => pi.sendUserMessage(BABYSIT_PROMPT, { deliverAs: "followUp" })
           : undefined,
       );
       if (!result.ok) {
