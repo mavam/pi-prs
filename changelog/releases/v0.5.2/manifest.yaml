@@ -1,0 +1,8 @@
+created: 2026-10-03
+title: Pull request feedback without interruptions
+intro: >-
+  Pull request review feedback and CI failures now wait until the agent finishes its
+  current work. Idle agents still respond immediately.
+source:
+  mode: sync-stable-queue
+  previous_stable: v0.5.1
