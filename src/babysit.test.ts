@@ -174,20 +174,24 @@ async function setup(t: TestContext) {
   const start = () => lifecycle.get("session_start")!({}, context());
 
   return {
-    command, context, start, state, messages, customMessages, deliveries, notifications, execCalls, pi,
+    command, context, start, state, messages, customMessages, deliveries, notifications, execCalls, pi, lifecycle,
   };
 }
 
 for (const idle of [true, false]) {
-  test(`watch --babysit uses follow-ups and delivers the prompt first when ${idle ? "idle" : "busy"}`, async (t) => {
+  test(`watch --babysit steers the prompt ahead of feedback when ${idle ? "idle" : "busy"}`, async (t) => {
     const {
-      command, context, start, state, messages, customMessages, deliveries,
+      command, context, start, state, messages, customMessages, deliveries, lifecycle,
     } = await setup(t);
     state.ciFailure = true;
     start();
     await command.handler("  watch   --babysit  ", context(idle));
 
-    assert.deepEqual(messages, [[BABYSIT_PROMPT, { deliverAs: "followUp" }]]);
+    assert.deepEqual(messages, [[BABYSIT_PROMPT, { deliverAs: "steer" }]]);
+    if (idle) {
+      assert.deepEqual(deliveries, ["prompt"]);
+      lifecycle.get("agent_start")!({}, context());
+    }
     assert.deepEqual(deliveries, [
       "prompt", FEEDBACK_MESSAGE_TYPE, CI_FAILURE_MESSAGE_TYPE,
     ]);
