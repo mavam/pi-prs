@@ -54,17 +54,35 @@ export default async function (pi: ExtensionAPI) {
   registerFeedbackRenderer(pi);
   registerCiFailureRenderer(pi);
 
+  // When babysitting from an idle session, the instructions must start the turn
+  // before any feedback arrives. Otherwise feedback wins the race and the
+  // instructions queue behind it. Hold deliveries until the turn has started.
+  let holding = false;
+  let held: Array<() => void> = [];
+  const deliver = (send: () => void) => {
+    if (holding) held.push(send);
+    else send();
+  };
+  const release = () => {
+    holding = false;
+    const queued = held;
+    held = [];
+    for (const send of queued) send();
+  };
+
   const stopCiListener = pi.events.on(PI_PR_CI_FAILURE_CHANNEL, (raw) => {
     if (!sessionActive || !isCiFailureEvent(raw) || raw.failures.length === 0)
       return;
-    pi.sendMessage(
-      {
-        customType: CI_FAILURE_MESSAGE_TYPE,
-        content: formatCiFailureMessage(raw),
-        display: true,
-        details: raw,
-      },
-      { deliverAs: "followUp", triggerTurn: true },
+    deliver(() =>
+      pi.sendMessage(
+        {
+          customType: CI_FAILURE_MESSAGE_TYPE,
+          content: formatCiFailureMessage(raw),
+          display: true,
+          details: raw,
+        },
+        { deliverAs: "followUp", triggerTurn: true },
+      ),
     );
   });
 
@@ -74,14 +92,16 @@ export default async function (pi: ExtensionAPI) {
     if (!sessionActive || !isFeedbackEvent(raw) || raw.feedback.length === 0) {
       return;
     }
-    pi.sendMessage(
-      {
-        customType: FEEDBACK_MESSAGE_TYPE,
-        content: formatModelMessage(raw.target, raw.feedback),
-        display: true,
-        details: raw,
-      },
-      { deliverAs: "followUp", triggerTurn: true },
+    deliver(() =>
+      pi.sendMessage(
+        {
+          customType: FEEDBACK_MESSAGE_TYPE,
+          content: formatModelMessage(raw.target, raw.feedback),
+          display: true,
+          details: raw,
+        },
+        { deliverAs: "followUp", triggerTurn: true },
+      ),
     );
   });
 
@@ -128,12 +148,19 @@ export default async function (pi: ExtensionAPI) {
         return;
       }
 
+      const idle = ctx.isIdle();
       const result = await poller.watch(
         ctx.cwd,
         babysit
-          ? () => pi.sendUserMessage(BABYSIT_PROMPT, { deliverAs: "followUp" })
+          ? () => {
+              // Queue as a follow-up ahead of feedback so nothing interrupts a running turn.
+              holding = idle;
+              pi.sendUserMessage(BABYSIT_PROMPT, { deliverAs: "followUp" });
+            }
           : undefined,
       );
+      // Don't leave feedback held if the turn never started.
+      if (holding) setTimeout(release, 1000).unref?.();
       if (!result.ok) {
         ctx.ui.notify(`Cannot watch pull request: ${result.error}`, "error");
         return;
@@ -151,8 +178,12 @@ export default async function (pi: ExtensionAPI) {
     poller.start(ctx.cwd);
   });
 
+  pi.on("agent_start", release);
+
   pi.on("session_shutdown", () => {
     sessionActive = false;
+    holding = false;
+    held = [];
     poller.stop();
     footer.clear();
     footer.dispose();
