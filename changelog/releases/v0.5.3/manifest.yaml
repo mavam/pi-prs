@@ -1,0 +1,9 @@
+created: 2026-10-07
+title: Babysit instructions arrive first
+intro: >-
+  This release fixes the delivery order of `/pr watch --babysit`. The agent now receives
+  its babysitting instructions before existing review feedback and CI failures, and
+  everything still arrives as a follow-up.
+source:
+  mode: sync-stable-queue
+  previous_stable: v0.5.2
