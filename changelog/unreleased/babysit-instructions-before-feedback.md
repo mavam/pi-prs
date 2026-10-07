@@ -5,4 +5,4 @@ authors:
   - mavam
 ---
 
-`/pr watch --babysit` now steers its instructions into the agent ahead of existing pull request feedback and CI failures, instead of queueing them as a follow-up behind those messages.
+`/pr watch --babysit` now delivers its instructions before existing pull request feedback and CI failures. Everything still arrives as a follow-up, so nothing interrupts a running turn.
