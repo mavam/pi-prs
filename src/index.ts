@@ -153,9 +153,9 @@ export default async function (pi: ExtensionAPI) {
         ctx.cwd,
         babysit
           ? () => {
-              // Steer so the instructions precede any queued feedback.
+              // Queue as a follow-up ahead of feedback so nothing interrupts a running turn.
               holding = idle;
-              pi.sendUserMessage(BABYSIT_PROMPT, { deliverAs: "steer" });
+              pi.sendUserMessage(BABYSIT_PROMPT, { deliverAs: "followUp" });
             }
           : undefined,
       );

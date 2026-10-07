@@ -179,7 +179,7 @@ async function setup(t: TestContext) {
 }
 
 for (const idle of [true, false]) {
-  test(`watch --babysit steers the prompt ahead of feedback when ${idle ? "idle" : "busy"}`, async (t) => {
+  test(`watch --babysit delivers the prompt as a follow-up ahead of feedback when ${idle ? "idle" : "busy"}`, async (t) => {
     const {
       command, context, start, state, messages, customMessages, deliveries, lifecycle,
     } = await setup(t);
@@ -187,7 +187,7 @@ for (const idle of [true, false]) {
     start();
     await command.handler("  watch   --babysit  ", context(idle));
 
-    assert.deepEqual(messages, [[BABYSIT_PROMPT, { deliverAs: "steer" }]]);
+    assert.deepEqual(messages, [[BABYSIT_PROMPT, { deliverAs: "followUp" }]]);
     if (idle) {
       assert.deepEqual(deliveries, ["prompt"]);
       lifecycle.get("agent_start")!({}, context());
