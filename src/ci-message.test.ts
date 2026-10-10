@@ -55,7 +55,7 @@ test("CI events use follow-up delivery, compact rendering, and session cleanup",
   await extension(pi);
   pi.events.emit(PI_PR_CI_FAILURE_CHANNEL, event);
   assert.equal(messages.length, 0, "no injection before session startup");
-  lifecycle.get("session_start")!({}, { cwd: "/repo" });
+  lifecycle.get("session_start")!({}, { cwd: "/repo", sessionManager: { getBranch: () => [] } });
   pi.events.emit(PI_PR_CI_FAILURE_CHANNEL, { ...event, failures: [] });
   pi.events.emit(PI_PR_CI_FAILURE_CHANNEL, { ...event, failures: [null] });
   pi.events.emit(PI_PR_CI_FAILURE_CHANNEL, event);

@@ -26,6 +26,7 @@ import {
   fetchFeedback,
   fetchThreadCount,
 } from "./feedback.ts";
+import { samePullRequest } from "./watch-state.ts";
 
 function isFeedbackSnapshot(
   snapshot: FeedbackSnapshot | ThreadCountSnapshot,
@@ -46,12 +47,21 @@ export interface PollerTimer {
   clear(handle: unknown): void;
 }
 
+export interface ResumeWatch {
+  target: PullRequestTarget;
+  /** IDs from feedback actually delivered to the session, not queued messages. */
+  feedbackIds: string[];
+  ciFailureIds: string[];
+}
+
 export interface PollerOptions {
   pi: ExtensionAPI;
   onState: (state: PullRequestStateEvent) => void;
   onFeedback: (target: PullRequestTarget, feedback: ReviewFeedback[]) => void;
   /** Return false when the event could not be delivered; it will be retried. */
   onCiFailure?: (event: CiFailureEvent) => boolean | void;
+  /** Watch intent changes only; stopping the poller preserves the intent. */
+  onWatchChange?: (target: PullRequestTarget | undefined) => void;
   timers?: PollerTimer;
 }
 
@@ -62,7 +72,7 @@ export interface WatchResult {
 }
 
 export interface Poller {
-  start(cwd: string): void;
+  start(cwd: string, resume?: ResumeWatch): void;
   stop(): void;
   setCwd(cwd: string): void;
   /** Invoke onReady once watching starts, before initial feedback is delivered. */
@@ -83,10 +93,14 @@ export function createPoller(options: PollerOptions): Poller {
   let cwd = process.cwd();
   let timer: unknown;
   let cycleRunning = false;
+  let restartRequested = false;
   let pendingWatch: object | undefined;
   let failures = 0;
 
   let branch = "";
+  let branchInitialized = false;
+  let pendingResume: ResumeWatch | undefined;
+  let resumeBaseline = false;
   let repository = "";
   let discovered: DiscoveredPullRequest | undefined;
   let watching = false;
@@ -98,14 +112,34 @@ export function createPoller(options: PollerOptions): Poller {
   let ciStatus: PullRequestSnapshot["ci"];
   let unresolvedThreadCount = 0;
 
-  const clearTarget = (): void => {
-    generation += 1;
-    discovered = undefined;
+  const reportWatch = (target: PullRequestTarget | undefined): void => {
+    try {
+      options.onWatchChange?.(target);
+    } catch {
+      // Persistence and other consumers must not break polling or delivery.
+    }
+  };
+
+  const endWatch = (report = true): number => {
+    const hadIntent = watching || pendingResume !== undefined;
+    const token = ++generation;
     watching = false;
+    pendingResume = undefined;
+    resumeBaseline = false;
+    if (report && hadIntent) reportWatch(undefined);
+    return token;
+  };
+
+  const clearTarget = (report = true): number => {
+    const hadIntent = watching || pendingResume !== undefined;
+    const token = endWatch(false);
+    discovered = undefined;
     seen = new Set<string>();
     seenCi = new Set<string>();
     ciStatus = undefined;
     unresolvedThreadCount = 0;
+    if (report && hadIntent) reportWatch(undefined);
+    return token;
   };
 
   const publish = (health: PullRequestHealth): void => {
@@ -203,6 +237,7 @@ export function createPoller(options: PollerOptions): Poller {
   const cycle = async (): Promise<void> => {
     if (!active || cycleRunning || pendingWatch) return;
     cycleRunning = true;
+    restartRequested = false;
     const pollCwd = cwd;
     const initialGeneration = generation;
     let nextHealth: PullRequestHealth = state?.health ?? "ok";
@@ -210,12 +245,19 @@ export function createPoller(options: PollerOptions): Poller {
     try {
       const nextBranch = await currentBranch(pi, pollCwd);
       if (!active || generation !== initialGeneration) return;
-      if (nextBranch !== branch || pollCwd !== cwd) {
+      if (!branchInitialized) {
+        // The first branch read belongs to the saved intent, not a branch change.
+        branchInitialized = true;
         branch = nextBranch;
-        clearTarget();
+      } else if (nextBranch !== branch || pollCwd !== cwd) {
+        branch = nextBranch;
+        const token = clearTarget();
+        if (!active || generation !== token) return;
       }
 
       if (!branch) {
+        const token = clearTarget();
+        if (!active || generation !== token) return;
         repository = "";
         ciStatus = undefined;
         unresolvedThreadCount = 0;
@@ -239,14 +281,49 @@ export function createPoller(options: PollerOptions): Poller {
 
       const nextPullRequest = result.pullRequest;
       if (!nextPullRequest) {
-        clearTarget();
+        const token = clearTarget();
+        if (!active || generation !== token) return;
         failures = 0;
         nextHealth = "ok";
         publish(nextHealth);
         return;
       }
-      if (discovered?.target.url !== nextPullRequest.target.url) clearTarget();
+      const restore = pendingResume;
+      if (
+        restore &&
+        (!samePullRequest(restore.target, nextPullRequest.target) ||
+          nextPullRequest.lifecycle !== "open")
+      ) {
+        const token = endWatch();
+        if (!active || generation !== token) return;
+      }
+      if (
+        !discovered ||
+        !samePullRequest(discovered.target, nextPullRequest.target)
+      ) {
+        // A matching pending restore is transferred to this discovered target.
+        const token = clearTarget(!pendingResume);
+        if (!active || generation !== token) return;
+      }
       discovered = nextPullRequest;
+      if (
+        restore &&
+        samePullRequest(restore.target, discovered.target) &&
+        discovered.lifecycle === "open"
+      ) {
+        pendingResume = undefined;
+        watching = true;
+        resumeBaseline = true;
+        seen = new Set(restore.feedbackIds);
+        seenCi = new Set(restore.ciFailureIds);
+        const token = generation;
+        reportWatch(discovered.target);
+        if (!active || generation !== token) return;
+      }
+      if (watching && discovered.lifecycle !== "open") {
+        const token = endWatch();
+        if (!active || generation !== token) return;
+      }
 
       const target = discovered.target;
       const token = generation;
@@ -297,8 +374,15 @@ export function createPoller(options: PollerOptions): Poller {
         isFeedbackSnapshot(threads.value)
       ) {
         const snapshot = threads.value;
-        const fresh = snapshot.feedback.filter((item) => !seen.has(item.id));
-        for (const item of snapshot.feedback) seen.add(item.id);
+        const fresh = (
+          resumeBaseline ? snapshot.openFeedback : snapshot.feedback
+        ).filter((item) => !seen.has(item.id));
+        if (resumeBaseline) {
+          seen = new Set(snapshot.feedback.map((item) => item.id));
+          resumeBaseline = false;
+        } else {
+          for (const item of snapshot.feedback) seen.add(item.id);
+        }
         const external = fresh.filter(
           (item) =>
             !snapshot.viewerLogin || item.author !== snapshot.viewerLogin,
@@ -312,8 +396,14 @@ export function createPoller(options: PollerOptions): Poller {
         }
       }
 
+      if (!active || generation !== token) return;
       // Watching a pull request ends when the pull request does.
-      if (watching && discovered.lifecycle !== "open") watching = false;
+      if (watching && discovered.lifecycle !== "open") {
+        const endedToken = endWatch();
+        if (!active || generation !== endedToken) return;
+        publish(nextHealth);
+        return;
+      }
       if (ci.value) await deliverCi(ci.value, target, pollCwd, token);
       if (!active || generation !== token) return;
 
@@ -326,32 +416,53 @@ export function createPoller(options: PollerOptions): Poller {
       cycleRunning = false;
       // A watch/unwatch may already have scheduled a newer timer. Preserve it.
       // If it fired while this cycle was busy, restart using the latest health.
-      if (!pendingWatch && timer === undefined) {
+      if (active && restartRequested && !pendingWatch) {
+        // A new session must not wait an idle interval for stale work to drain.
+        if (timer !== undefined) timers.clear(timer);
+        timer = undefined;
+        void cycle();
+      } else if (!pendingWatch && timer === undefined) {
         schedule(state?.health ?? nextHealth);
       }
     }
   };
 
   return {
-    start: (nextCwd) => {
+    start: (nextCwd, resume) => {
       active = true;
+      if (timer !== undefined) timers.clear(timer);
+      timer = undefined;
       cwd = nextCwd;
       branch = "";
+      branchInitialized = false;
       repository = "";
-      clearTarget();
+      failures = 0;
+      pendingWatch = undefined;
+      clearTarget(false);
+      restartRequested = cycleRunning;
+      pendingResume = resume
+        ? {
+            target: { ...resume.target },
+            feedbackIds: [...resume.feedbackIds],
+            ciFailureIds: [...resume.ciFailureIds],
+          }
+        : undefined;
       void cycle();
     },
     stop: () => {
       active = false;
+      restartRequested = false;
+      pendingWatch = undefined;
       if (timer !== undefined) timers.clear(timer);
       timer = undefined;
-      clearTarget();
+      clearTarget(false);
       state = undefined;
     },
     setCwd: (nextCwd) => {
       if (nextCwd === cwd) return;
       cwd = nextCwd;
       branch = "";
+      branchInitialized = false;
       clearTarget();
     },
     watch: async (nextCwd, onReady) => {
@@ -364,19 +475,26 @@ export function createPoller(options: PollerOptions): Poller {
           ok: false,
           error: "Watching was canceled",
         });
+        // A failed manual retry must not erase a saved intent or its baseline.
+        // Supersede it only after success or a confirmed checkout/target change.
         const cwdChanged = cwd !== nextCwd;
         cwd = nextCwd;
 
         const nextBranch = await currentBranch(pi, nextCwd);
         if (!active || generation !== token) return cancelled();
         if (!nextBranch) {
+          token = clearTarget();
+          if (!active || generation !== token) return cancelled();
           return { ok: false, error: "No branch is checked out" };
         }
-        if (nextBranch !== branch || cwdChanged) {
+        if (!branchInitialized && !cwdChanged) {
           branch = nextBranch;
-          clearTarget();
-          token = generation;
+        } else if (nextBranch !== branch || cwdChanged) {
+          branch = nextBranch;
+          token = clearTarget();
+          if (!active || generation !== token) return cancelled();
         }
+        branchInitialized = true;
 
         const result = await discoverPullRequest(pi, nextCwd, branch);
         if (!active || generation !== token) return cancelled();
@@ -390,17 +508,31 @@ export function createPoller(options: PollerOptions): Poller {
           };
         }
         if (!result.pullRequest) {
+          token = clearTarget();
+          if (!active || generation !== token) return cancelled();
           return {
             ok: false,
             error: "No pull request found for the current branch",
           };
         }
-        if (discovered?.target.url !== result.pullRequest.target.url) {
-          clearTarget();
-          token = generation;
+        if (
+          !discovered ||
+          !samePullRequest(discovered.target, result.pullRequest.target)
+        ) {
+          const restore =
+            pendingResume &&
+            samePullRequest(pendingResume.target, result.pullRequest.target) &&
+            result.pullRequest.lifecycle === "open"
+              ? pendingResume
+              : undefined;
+          token = clearTarget(!restore);
+          if (!active || generation !== token) return cancelled();
+          pendingResume = restore;
         }
         discovered = result.pullRequest;
         if (discovered.lifecycle !== "open") {
+          token = endWatch();
+          if (!active || generation !== token) return cancelled();
           return {
             ok: false,
             error: `The pull request is ${discovered.lifecycle}`,
@@ -424,7 +556,8 @@ export function createPoller(options: PollerOptions): Poller {
 
         if (snapshot.value.lifecycle && snapshot.value.lifecycle !== "open") {
           discovered.lifecycle = snapshot.value.lifecycle;
-          watching = false;
+          token = endWatch();
+          if (!active || generation !== token) return cancelled();
           publish("ok");
           return {
             ok: false,
@@ -432,9 +565,13 @@ export function createPoller(options: PollerOptions): Poller {
           };
         }
         watching = true;
+        pendingResume = undefined;
+        resumeBaseline = false;
         unresolvedThreadCount = snapshot.value.unresolvedThreadCount;
         seen = new Set(snapshot.value.feedback.map((item) => item.id));
         if (ci.value) ciStatus = ci.value.status;
+        reportWatch(target);
+        if (!active || generation !== token) return cancelled();
 
         const health = ci.value
           ? "ok"
@@ -459,13 +596,17 @@ export function createPoller(options: PollerOptions): Poller {
       }
     },
     unwatch: () => {
-      generation += 1;
-      // Cancelling an in-flight `/pr watch` counts as stopping it.
-      if (!watching) return pendingWatch !== undefined;
-      watching = false;
-      publish("ok");
-      schedule("ok");
-      return true;
+      // Cancelling an in-flight watch or restore counts as stopping it.
+      const hadIntent = watching || pendingResume !== undefined;
+      const wasPending = pendingWatch !== undefined;
+      pendingWatch = undefined;
+      const token = endWatch();
+      if (!hadIntent && wasPending) reportWatch(undefined);
+      if (active && generation === token && (hadIntent || wasPending)) {
+        publish("ok");
+        schedule("ok");
+      }
+      return hadIntent || wasPending;
     },
     isWatching: () => watching,
     currentState: () => state,

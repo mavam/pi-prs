@@ -1,18 +1,20 @@
 import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
-import type {
-  ExtensionAPI,
-  ExtensionCommandContext,
+import {
+  SessionManager,
+  type ExtensionAPI,
+  type ExtensionCommandContext,
 } from "@earendil-works/pi-coding-agent";
 import { PI_PR_STATE_CHANNEL } from "./api.ts";
 import { BABYSIT_MESSAGE_TYPE, BABYSIT_PROMPT } from "./babysit.ts";
 import { CI_FAILURE_MESSAGE_TYPE } from "./ci-message.ts";
 import extension from "./index.ts";
 import { FEEDBACK_MESSAGE_TYPE } from "./message.ts";
+import { restoreWatch, WATCH_STATE_TYPE } from "./watch-state.ts";
 
 type Command = Parameters<ExtensionAPI["registerCommand"]>[1];
 
-async function setup(t: TestContext) {
+async function setup(t: TestContext, sessionManager = SessionManager.inMemory("/repo")) {
   let command: Command | undefined;
   const messages: Parameters<ExtensionAPI["sendMessage"]>[] = [];
   const customMessages: Parameters<ExtensionAPI["sendMessage"]>[] = [];
@@ -63,6 +65,7 @@ async function setup(t: TestContext) {
     },
     on: (name: string, callback: (...args: any[]) => void) =>
       lifecycle.set(name, callback),
+    appendEntry: (type: string, data: unknown) => sessionManager.appendCustomEntry(type, data),
     registerMessageRenderer: () => {},
     registerCommand: (name: string, value: Command) => {
       assert.equal(name, "pr");
@@ -72,6 +75,8 @@ async function setup(t: TestContext) {
       assert.fail("Babysitting must use the same enqueue path as feedback");
     },
     sendMessage: (...args: Parameters<ExtensionAPI["sendMessage"]>) => {
+      const [message] = args;
+      sessionManager.appendCustomMessageEntry(message.customType, message.content, message.display, message.details);
       if (args[0].customType === BABYSIT_MESSAGE_TYPE) {
         messages.push(args);
         deliveries.push("prompt");
@@ -167,6 +172,7 @@ async function setup(t: TestContext) {
   const context = (idle = true) =>
     ({
       cwd: "/repo",
+      sessionManager,
       hasUI: false,
       isIdle: () => idle,
       ui: {
@@ -178,7 +184,7 @@ async function setup(t: TestContext) {
   const start = () => lifecycle.get("session_start")!({}, context());
 
   return {
-    command, context, start, state, messages, customMessages, deliveries, notifications, execCalls, pi, lifecycle,
+    command, context, start, state, messages, customMessages, deliveries, notifications, execCalls, pi, lifecycle, sessionManager,
   };
 }
 
@@ -315,6 +321,84 @@ test("pr completion and usage expose babysitting only as a watch flag", async (t
   ]);
   assert.deepEqual(messages, []);
   assert.deepEqual(execCalls, []);
+});
+
+async function waitUntil(check: () => boolean) {
+  for (let attempt = 0; attempt < 100 && !check(); attempt++) {
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+  assert.ok(check(), "expected polling to finish");
+}
+
+test("reattaching a watched session restores watching without repeating instructions or deliveries", async (t) => {
+  const first = await setup(t);
+  first.state.ciFailure = true;
+  first.start();
+  await first.command.handler("watch --babysit", first.context());
+  const saved = restoreWatch(first.sessionManager.getBranch());
+  assert.ok(saved);
+  assert.equal(saved.feedbackIds.length, 1);
+  assert.equal(saved.ciFailureIds.length, 1);
+  first.lifecycle.get("session_shutdown")!({});
+  assert.deepEqual(restoreWatch(first.sessionManager.getBranch()), saved,
+    "shutdown must not persist an unwatch");
+
+  const resumed = await setup(t, first.sessionManager);
+  resumed.state.ciFailure = true;
+  let watching = false;
+  resumed.pi.events.on(PI_PR_STATE_CHANNEL, (raw) => {
+    watching = (raw as { pullRequest?: { watching: boolean } }).pullRequest?.watching ?? false;
+  });
+  resumed.start();
+  await waitUntil(() => watching);
+  assert.deepEqual(resumed.messages, []);
+  assert.deepEqual(resumed.customMessages, []);
+  assert.equal(first.sessionManager.getBranch()
+    .filter((entry) => entry.type === "custom" && entry.customType === WATCH_STATE_TYPE).length, 1,
+    "resuming an unchanged watch must not append duplicate state");
+});
+
+test("explicit unwatch survives session reattachment", async (t) => {
+  const first = await setup(t);
+  first.start();
+  await first.command.handler("watch --babysit", first.context());
+  await first.command.handler("unwatch", first.context());
+  assert.equal(restoreWatch(first.sessionManager.getBranch()), undefined);
+  first.lifecycle.get("session_shutdown")!({});
+
+  const resumed = await setup(t, first.sessionManager);
+  let state: { pullRequest?: { watching: boolean } } | undefined;
+  resumed.pi.events.on(PI_PR_STATE_CHANNEL, (raw) => { state = raw as typeof state; });
+  resumed.start();
+  await waitUntil(() => !!state?.pullRequest);
+  assert.equal(state?.pullRequest?.watching, false);
+  assert.deepEqual(resumed.deliveries, []);
+});
+
+test("failed watch does not persist intent that could enable watching on resume", async (t) => {
+  const h = await setup(t);
+  h.state.failFeedback = true;
+  h.start();
+  await h.command.handler("watch --babysit", h.context());
+  assert.equal(restoreWatch(h.sessionManager.getBranch()), undefined);
+  assert.deepEqual(h.sessionManager.getBranch(), []);
+});
+
+test("tree navigation restores only watch intent on the selected branch", async (t) => {
+  const h = await setup(t);
+  const unwatched = h.sessionManager.appendCustomEntry("test-root", {});
+  h.start();
+  await h.command.handler("watch", h.context());
+  assert.ok(restoreWatch(h.sessionManager.getBranch()));
+  h.sessionManager.branch(unwatched);
+  let watching: boolean | undefined;
+  h.pi.events.on(PI_PR_STATE_CHANNEL, (raw) => {
+    watching = (raw as { pullRequest?: { watching: boolean } }).pullRequest?.watching;
+  });
+  h.lifecycle.get("session_tree")!({}, h.context());
+  await waitUntil(() => watching !== undefined);
+  assert.equal(watching, false);
+  assert.equal(restoreWatch(h.sessionManager.getBranch()), undefined);
 });
 
 test("babysitting instructions cover assessment, replies, resolution, and blockers", () => {

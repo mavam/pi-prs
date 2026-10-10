@@ -1,10 +1,14 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type {
+  ExtensionAPI,
+  ExtensionContext,
+} from "@earendil-works/pi-coding-agent";
 import {
   PI_PR_CI_FAILURE_CHANNEL,
   PI_PR_FEEDBACK_CHANNEL,
   PI_PR_PROTOCOL,
   PI_PR_STATE_CHANNEL,
   type FeedbackEvent,
+  type PullRequestTarget,
   isCiFailureEvent,
   isFeedbackEvent,
 } from "./api.ts";
@@ -19,6 +23,12 @@ import { formatModelMessage } from "./format.ts";
 import { loadHtmlConverter } from "./markdown.ts";
 import { FEEDBACK_MESSAGE_TYPE, registerFeedbackRenderer } from "./message.ts";
 import { createPoller } from "./poller.ts";
+import {
+  restoreWatch,
+  samePullRequest,
+  WATCH_STATE_TYPE,
+  type WatchState,
+} from "./watch-state.ts";
 
 const USAGE = "Usage: /pr watch [--babysit] | /pr unwatch";
 
@@ -26,11 +36,22 @@ export default async function (pi: ExtensionAPI) {
   await loadHtmlConverter();
 
   let sessionActive = false;
+  let savedTarget: PullRequestTarget | undefined;
 
   const footer = createFooterPublisher(pi);
 
   const poller = createPoller({
     pi,
+    onWatchChange: (target) => {
+      if (!sessionActive) return;
+      if (!target && !savedTarget) return;
+      if (target && savedTarget && samePullRequest(target, savedTarget)) return;
+      pi.appendEntry<WatchState>(WATCH_STATE_TYPE, {
+        version: 1,
+        target: target ?? null,
+      });
+      savedTarget = target;
+    },
     onState: (state) => {
       pi.events.emit(PI_PR_STATE_CHANNEL, state);
       footer.publish(state);
@@ -157,10 +178,17 @@ export default async function (pi: ExtensionAPI) {
     },
   });
 
-  pi.on("session_start", (_event, ctx) => {
+  const startSession = (ctx: ExtensionContext) => {
+    // Shutdown stops timers, not the persisted watch intent. Rebuild from the
+    // active branch on reattachment and tree navigation, without a babysit prompt.
+    poller.stop();
+    const resume = restoreWatch(ctx.sessionManager.getBranch());
+    savedTarget = resume?.target;
     sessionActive = true;
-    poller.start(ctx.cwd);
-  });
+    poller.start(ctx.cwd, resume);
+  };
+  pi.on("session_start", (_event, ctx) => startSession(ctx));
+  pi.on("session_tree", (_event, ctx) => startSession(ctx));
 
   pi.on("session_shutdown", () => {
     sessionActive = false;

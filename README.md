@@ -29,6 +29,18 @@ then checks GitHub every 30 seconds for new comments, reviews, and failed checks
 New feedback starts an agent turn when pi is idle or queues a follow-up when
 it's busy, without interrupting its current work.
 
+Watching is saved with the session. Resuming or reloading automatically
+reattaches to the same open pull request without repeating babysitting
+instructions or feedback already recorded on the active session branch. New
+unresolved review feedback and current CI failures can still start a turn. The
+initial catch-up covers unresolved review threads, just like `/pr watch`; it
+doesn't replay historical conversation comments or review summaries.
+
+An explicit `/pr unwatch` stays stopped after resuming. Watching also stops if
+the checkout resolves to a different pull request, or the saved pull request
+closes or merges. Sessions from older versions need one plain `/pr watch` to
+save their watch state; this doesn't add babysitting instructions.
+
 CI messages include the commit, failed check names, and links. GitHub Actions
 failures also include short diagnostic excerpts as soon as the failed job
 finishes, even while the rest of the run continues; expand the message to see
@@ -85,7 +97,9 @@ The prompt instructs the agent to:
 These are instructions for the agent, not an enforced automation policy. They
 apply to feedback already in context and future feedback in this session until
 you tell the agent to stop. `/pr unwatch` stops new deliveries; it doesn't retract
-the prompt or cancel work already underway.
+the prompt or cancel work already underway. Automatic session reattachment
+reuses those instructions; explicitly running `/pr watch --babysit` again still
+adds a fresh prompt.
 
 ## 🧩 Footer widgets
 
