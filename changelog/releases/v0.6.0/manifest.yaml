@@ -1,0 +1,10 @@
+created: 2026-10-10
+title: Persistent pull request watching
+intro: >-
+  Pull request watching now resumes when you reopen or reload a session, without repeating
+  babysitting instructions or previously delivered feedback. Babysitting instructions
+  now reliably arrive before review feedback and check failures, even while Pi is
+  busy.
+source:
+  mode: sync-stable-queue
+  previous_stable: v0.5.3
