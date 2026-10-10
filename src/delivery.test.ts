@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, rm } from "node:fs/promises";
+import { copyFile, mkdtemp, mkdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
@@ -12,10 +12,12 @@ import {
   type AgentSession,
   type ExtensionAPI,
 } from "@earendil-works/pi-coding-agent";
+import { isPullRequestStateEvent, PI_PR_STATE_CHANNEL, type PullRequestStateEvent } from "./api.ts";
 import { BABYSIT_MESSAGE_TYPE, BABYSIT_PROMPT } from "./babysit.ts";
 import { CI_FAILURE_MESSAGE_TYPE } from "./ci-message.ts";
 import extension from "./index.ts";
 import { FEEDBACK_MESSAGE_TYPE } from "./message.ts";
+import { WATCH_STATE_TYPE } from "./watch-state.ts";
 
 // Use the SDK's actual command dispatch, input hooks, queues, message conversion,
 // and agent loop. Only subprocesses and the model transport are replaced.
@@ -37,9 +39,27 @@ function modelText(context: ModelContext) {
   );
 }
 
-async function setup(t: TestContext, followUpMode: "all" | "one-at-a-time" = "one-at-a-time") {
+interface SetupOptions {
+  persist?: boolean;
+  sessionFile?: string;
+  sessionManager?: SessionManager;
+  branch?: string;
+  batch?: number;
+  number?: number;
+  feedbackBatches?: number[];
+  resolvedBatches?: number[];
+  ciBatches?: number[];
+  holdInitialModel?: boolean;
+}
+
+async function setup(
+  t: TestContext,
+  followUpMode: "all" | "one-at-a-time" = "one-at-a-time",
+  options: SetupOptions = {},
+) {
   const root = await mkdtemp(join(tmpdir(), "pi-prs-delivery-"));
-  const cwd = join(root, "workspace");
+  const restored = options.sessionManager ?? (options.sessionFile ? SessionManager.open(options.sessionFile) : undefined);
+  const cwd = restored?.getCwd() ?? join(root, "workspace");
   const agentDir = join(root, "agent");
   const gates: ReturnType<typeof deferred>[] = [];
   const gate = () => {
@@ -49,7 +69,10 @@ async function setup(t: TestContext, followUpMode: "all" | "one-at-a-time" = "on
   };
   let session: AgentSession | undefined;
   const errors: unknown[] = [];
-  t.after(async () => {
+  let closed = false;
+  const close = async () => {
+    if (closed) return;
+    closed = true;
     // Release even deliberately blocked legacy input hooks on assertion failure.
     for (const pending of gates) pending.resolve();
     if (session) {
@@ -57,10 +80,13 @@ async function setup(t: TestContext, followUpMode: "all" | "one-at-a-time" = "on
       await session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
       session.dispose();
     }
+  };
+  t.after(async () => {
+    await close();
     await rm(root, { recursive: true, force: true });
     assert.deepEqual(errors, [], "the real SDK must not swallow extension errors");
   });
-  await Promise.all([mkdir(cwd), mkdir(agentDir)]);
+  await Promise.all([mkdir(cwd, { recursive: true }), mkdir(agentDir)]);
   const settingsManager = SettingsManager.inMemory({
     followUpMode,
     compaction: { enabled: false },
@@ -95,17 +121,24 @@ async function setup(t: TestContext, followUpMode: "all" | "one-at-a-time" = "on
   const babysitInputs: string[] = [];
   const inputRelease = gate();
   const lifecycle: string[] = [];
+  const states: PullRequestStateEvent[] = [];
+  const initialPoll = gate();
   const state = {
-    branch: "", // Let the automatic session-start poll finish without a PR.
-    batch: 1,
+    // Existing delivery tests start with a silent poll; resumed boots discover a PR.
+    branch: options.branch ?? "",
+    batch: options.batch ?? 1,
+    number: options.number ?? 1,
+    feedbackBatches: options.feedbackBatches,
+    resolvedBatches: options.resolvedBatches ?? [],
+    ciBatches: options.ciBatches,
     beforeFeedback: undefined as (() => Promise<void>) | undefined,
   };
-  const url = "https://github.com/acme/repo/pull/1";
+  const url = () => `https://github.com/acme/repo/pull/${state.number}`;
   const response = (value: unknown) => ({
     code: 0, stdout: typeof value === "string" ? value : JSON.stringify(value), stderr: "", killed: false,
   });
   const metadata = () => ({
-    number: 1, url, state: "OPEN", headRefOid: `sha-${state.batch}`,
+    number: state.number, url: url(), state: "OPEN", headRefOid: `sha-${state.batch}`,
     headRepositoryOwner: { login: "acme" },
   });
   const exec: ExtensionAPI["exec"] = async (name, args) => {
@@ -124,27 +157,27 @@ async function setup(t: TestContext, followUpMode: "all" | "one-at-a-time" = "on
         state: "OPEN",
         reviewThreads: {
           pageInfo: { hasNextPage: false },
-          nodes: [{
-            isResolved: false,
+          nodes: (state.feedbackBatches ?? [state.batch]).map((batch) => ({
+            isResolved: state.resolvedBatches.includes(batch),
             comments: { nodes: [{
-              id: `comment-${state.batch}`,
-              body: `Review finding ${state.batch}: please fix this.`,
+              id: `comment-${batch}`,
+              body: `Review finding ${batch}: please fix this.`,
               author: { login: "reviewer" },
-              url: `${url}#discussion_r${state.batch}`,
+              url: `${url()}#discussion_r${batch}`,
               createdAt: "2026-01-01T00:00:00Z",
             }] },
-          }],
+          })),
         },
       } } } });
     }
     if (name === "gh" && args[0] === "pr" && args[1] === "view") {
       return response({
         ...metadata(),
-        statusCheckRollup: [{
-          __typename: "CheckRun", name: `failed-check-${state.batch}`,
+        statusCheckRollup: (state.ciBatches ?? [state.batch]).map((batch) => ({
+          __typename: "CheckRun", name: `failed-check-${batch}`,
           status: "COMPLETED", conclusion: "FAILURE",
           detailsUrl: "https://ci.example/test",
-        }],
+        })),
       });
     }
     throw new Error(`Unexpected subprocess: ${name} ${args.join(" ")}`);
@@ -155,6 +188,11 @@ async function setup(t: TestContext, followUpMode: "all" | "one-at-a-time" = "on
     noThemes: true, noContextFiles: true,
     systemPrompt: "You are a fake model in a delivery regression test.",
     extensionFactories: [async (pi) => {
+      pi.events.on(PI_PR_STATE_CHANNEL, (event) => {
+        assert.ok(isPullRequestStateEvent(event));
+        states.push(event);
+        initialPoll.resolve();
+      });
       pi.on("input", async (event) => {
         if (event.text === BABYSIT_PROMPT) {
           babysitInputs.push(event.text);
@@ -178,10 +216,14 @@ async function setup(t: TestContext, followUpMode: "all" | "one-at-a-time" = "on
   assert.deepEqual(resourceLoader.getExtensions().errors, []);
   ({ session } = await createAgentSession({
     cwd, agentDir, modelRuntime, model, settingsManager, resourceLoader,
-    sessionManager: SessionManager.inMemory(cwd), tools: [],
+    sessionManager: restored ?? (options.persist
+      ? SessionManager.create(cwd, join(root, "sessions"))
+      : SessionManager.inMemory(cwd)),
+    tools: [],
   }));
   const contexts: ModelContext[] = [];
-  let nextModel: { entered: ReturnType<typeof gate>; release: ReturnType<typeof gate> } | undefined;
+  const initialModel = options.holdInitialModel ? { entered: gate(), release: gate() } : undefined;
+  let nextModel: { entered: ReturnType<typeof gate>; release: ReturnType<typeof gate> } | undefined = initialModel;
   session.agent.streamFunction = async (selectedModel, context) => {
     contexts.push(structuredClone(context));
     const blocked = nextModel;
@@ -205,12 +247,15 @@ async function setup(t: TestContext, followUpMode: "all" | "one-at-a-time" = "on
     } as unknown as Stream;
   };
   await session.bindExtensions({ onError: (error) => { errors.push(error); } });
-  await new Promise<void>((resolve) => setImmediate(resolve));
-  assert.equal(calls.length, 0, "session_start must not deliver feedback");
-  assert.equal(contexts.length, 0);
-  state.branch = "feature";
+  await initialPoll.promise;
+  if (!restored) {
+    assert.equal(calls.length, 0, "a fresh session must not deliver feedback");
+    assert.equal(contexts.length, 0);
+  }
+  state.branch = options.branch ?? "feature";
   return {
     session, state, calls, userCalls, babysitInputs, contexts, lifecycle, gate,
+    states, close, initialModel,
     holdNextModel() {
       assert.equal(nextModel, undefined);
       nextModel = { entered: gate(), release: gate() };
@@ -365,4 +410,195 @@ test("real SDK: unwatch during fetch cancels delivery even across unrelated agen
   assert.equal(h.contexts.length, 2);
   assert.ok(h.contexts.every((context) => modelText(context).every((text) =>
     !text.includes(BABYSIT_PROMPT) && !text.includes("Review finding") && !text.includes("failed-check"))));
+});
+
+function watchEntries(h: Awaited<ReturnType<typeof setup>>) {
+  return h.session.sessionManager.getBranch()
+    .flatMap((entry) => entry.type === "custom" && entry.customType === WATCH_STATE_TYPE ? [entry.data] : []);
+}
+
+async function savedWatch(t: TestContext) {
+  const h = await setup(t, "one-at-a-time", { persist: true });
+  // The SDK only flushes a new session's header after an actual assistant turn.
+  await h.session.prompt("Start reviewing this pull request");
+  await h.session.prompt("/pr watch --babysit");
+  await h.session.waitForIdle();
+  assertCustomDelivery(h);
+  const target = h.states.at(-1)!.pullRequest!.target;
+  assert.deepEqual(watchEntries(h), [{ version: 1, target }]);
+  const sessionFile = h.session.sessionManager.getSessionFile();
+  assert.ok(sessionFile);
+  return { h, sessionFile, target };
+}
+
+for (const mode of ["one-at-a-time", "all"] as const) {
+  test(`real SDK: reopening a watched session delivers only new offline findings and CI (${mode})`, { timeout: 10000 }, async (t) => {
+    const { h, sessionFile, target } = await savedWatch(t);
+    const persisted = h.session.sessionManager.getBranch()
+      .filter((entry) => entry.type === "custom_message");
+    assert.deepEqual(persisted.map((entry) => entry.customType), [
+      BABYSIT_MESSAGE_TYPE, FEEDBACK_MESSAGE_TYPE, CI_FAILURE_MESSAGE_TYPE,
+    ]);
+    assert.ok(persisted[1]!.details, "review IDs must come from actual persisted delivery details");
+    assert.ok(persisted[2]!.details, "CI IDs must come from actual persisted delivery details");
+    await h.close();
+    assert.deepEqual(watchEntries(h), [{ version: 1, target }], "shutdown must preserve watch intent");
+
+    const snapshot = {
+      sessionFile, branch: "feature",
+      // Keep the same head so failed-check-1 retains its execution identity.
+      feedbackBatches: [1, 2, 3], resolvedBatches: [3], ciBatches: [1, 2],
+    };
+    const resumed = await setup(t, mode, { ...snapshot, holdInitialModel: true });
+    assert.notEqual(resumed.session, h.session);
+    assert.notEqual(resumed.session.sessionManager, h.session.sessionManager);
+    assert.equal(resumed.session.sessionManager.getSessionFile(), sessionFile);
+    assert.equal(resumed.states.at(-1)!.pullRequest!.watching, true);
+    assert.deepEqual(resumed.calls.map(([message]) => message.customType), [
+      FEEDBACK_MESSAGE_TYPE, CI_FAILURE_MESSAGE_TYPE,
+    ], "resume must not enqueue babysitting instructions");
+    assert.deepEqual(resumed.userCalls, []);
+    assert.deepEqual(resumed.babysitInputs, []);
+    const feedback = resumed.calls[0]![0].content;
+    const ci = resumed.calls[1]![0].content;
+    assert.equal(typeof feedback, "string");
+    assert.equal(typeof ci, "string");
+    assert.match(feedback as string, /Review finding 2:/);
+    assert.doesNotMatch(feedback as string, /Review finding [13]:/);
+    assert.match(ci as string, /failed-check-2/);
+    assert.doesNotMatch(ci as string, /failed-check-1/);
+    await resumed.initialModel!.entered.promise;
+    resumed.initialModel!.release.resolve();
+    await resumed.session.waitForIdle();
+
+    const texts = modelText(resumed.contexts.at(-1)!);
+    assert.equal(texts.filter((text) => text.includes(BABYSIT_PROMPT)).length, 1);
+    for (const batch of [1, 2]) {
+      assert.equal(texts.filter((text) => text.includes(`Review finding ${batch}:`)).length, 1);
+      assert.equal(texts.filter((text) => text.includes(`failed-check-${batch}`)).length, 1);
+    }
+    assert.ok(texts.every((text) => !text.includes("Review finding 3:")),
+      "the first resumed snapshot must exclude already resolved offline feedback");
+    const deliveries = resumed.session.sessionManager.getBranch()
+      .filter((entry) => entry.type === "custom_message");
+    // JSONL omits optional undefined properties such as babysitting details.
+    assert.deepEqual(deliveries.slice(0, persisted.length), JSON.parse(JSON.stringify(persisted)));
+    assert.deepEqual(deliveries.map((entry) => entry.customType), [
+      BABYSIT_MESSAGE_TYPE, FEEDBACK_MESSAGE_TYPE, CI_FAILURE_MESSAGE_TYPE,
+      FEEDBACK_MESSAGE_TYPE, CI_FAILURE_MESSAGE_TYPE,
+    ]);
+    assert.deepEqual(watchEntries(resumed), [{ version: 1, target }]);
+    await resumed.close();
+
+    // A second new extension/runtime proves the catch-up deliveries were saved,
+    // rather than merely hidden by an in-memory poller deduplication set.
+    const again = await setup(t, mode, snapshot);
+    assert.equal(again.states.at(-1)!.pullRequest!.watching, true);
+    assert.deepEqual(again.calls, []);
+    assert.deepEqual(again.contexts, []);
+    await again.session.prompt("Continue with unrelated work");
+    await again.session.waitForIdle();
+    assert.deepEqual(again.calls, []);
+    assert.equal(modelText(again.contexts.at(-1)!).filter((text) => text.includes(BABYSIT_PROMPT)).length, 1);
+    await again.close();
+  });
+}
+
+test("real SDK: feedback queued but not persisted is recovered after reattachment", { timeout: 10000 }, async (t) => {
+  const { h, sessionFile } = await savedWatch(t);
+  const model = h.holdNextModel();
+  const running = h.session.prompt("Work interrupted before follow-ups were consumed");
+  await model.entered.promise;
+  h.state.batch = 2;
+  await h.session.prompt("/pr watch");
+  assert.ok(h.calls.some(([message]) => String(message.content).includes("Review finding 2:")));
+  assert.ok(h.session.sessionManager.getBranch().every((entry) =>
+    entry.type !== "custom_message" || !String(entry.content).includes("Review finding 2:")));
+
+  // Freeze the actual JSONL at the crash boundary, before cleanup can drain queues.
+  const interruptedFile = `${sessionFile}.interrupted.jsonl`;
+  await copyFile(sessionFile, interruptedFile);
+  await h.close();
+  await running;
+  const resumed = await setup(t, "one-at-a-time", {
+    sessionFile: interruptedFile, branch: "feature", batch: 2,
+  });
+  await resumed.session.waitForIdle();
+  assert.deepEqual(resumed.calls.map(([message]) => message.customType), [
+    FEEDBACK_MESSAGE_TYPE, CI_FAILURE_MESSAGE_TYPE,
+  ]);
+  const texts = modelText(resumed.contexts.at(-1)!);
+  assert.equal(texts.filter((text) => text.includes(BABYSIT_PROMPT)).length, 1);
+  assert.equal(texts.filter((text) => text.includes("Review finding 2:")).length, 1);
+  assert.equal(texts.filter((text) => text.includes("failed-check-2")).length, 1);
+  await resumed.close();
+});
+
+test("real SDK: unchanged saved watch resumes silently, but explicit babysitting still sends instructions", { timeout: 10000 }, async (t) => {
+  const { h, sessionFile, target } = await savedWatch(t);
+  await h.close();
+  const resumed = await setup(t, "one-at-a-time", { sessionFile, branch: "feature" });
+  assert.equal(resumed.states.at(-1)!.pullRequest!.watching, true);
+  assert.deepEqual(resumed.calls, [], "persisted findings and CI must not be delivered twice");
+  assert.deepEqual(resumed.contexts, [], "silent resume must not start a model turn");
+  assert.deepEqual(watchEntries(resumed), [{ version: 1, target }]);
+
+  resumed.state.batch = 2;
+  await resumed.session.prompt("/pr watch --babysit");
+  await resumed.session.waitForIdle();
+  assertCustomDelivery(resumed);
+  const texts = modelText(resumed.contexts.at(-1)!);
+  assert.equal(texts.filter((text) => text.includes(BABYSIT_PROMPT)).length, 2,
+    "an explicit request must still add new babysitting instructions");
+  assert.equal(texts.filter((text) => text.includes("Review finding 1:")).length, 1);
+  assert.equal(texts.filter((text) => text.includes("Review finding 2:")).length, 1);
+  await resumed.close();
+});
+
+test("real SDK: explicit unwatch persists across reopening and suppresses offline delivery", { timeout: 10000 }, async (t) => {
+  const { h, sessionFile, target } = await savedWatch(t);
+  await h.session.prompt("/pr unwatch");
+  const expected = [{ version: 1, target }, { version: 1, target: null }];
+  assert.deepEqual(watchEntries(h), expected);
+  await h.close();
+  const resumed = await setup(t, "one-at-a-time", { sessionFile, branch: "feature", batch: 2 });
+  assert.equal(resumed.states.at(-1)!.pullRequest!.watching, false);
+  assert.deepEqual(watchEntries(resumed), expected);
+  assert.deepEqual(resumed.calls, []);
+  assert.deepEqual(resumed.contexts, []);
+  await resumed.session.prompt("Unrelated work after unwatch");
+  await resumed.session.waitForIdle();
+  assert.deepEqual(resumed.calls, []);
+  assert.ok(modelText(resumed.contexts.at(-1)!).every((text) =>
+    !text.includes("Review finding 2:") && !text.includes("failed-check-2")));
+  await resumed.close();
+});
+
+test("real SDK: saved intent never auto-watches a different pull request", { timeout: 10000 }, async (t) => {
+  const { h, sessionFile } = await savedWatch(t);
+  await h.close();
+  const resumed = await setup(t, "one-at-a-time", {
+    sessionFile, branch: "feature", number: 2, batch: 2,
+  });
+  const current = resumed.states.at(-1)!.pullRequest!;
+  assert.equal(current.target.number, 2, "the fake discovery must really select the other PR");
+  assert.equal(current.watching, false);
+  assert.deepEqual(resumed.calls, []);
+  assert.deepEqual(resumed.contexts, []);
+  assert.deepEqual(watchEntries(resumed).at(-1), { version: 1, target: null });
+  await resumed.close();
+});
+
+test("real SDK: a fresh session discovers the PR without inheriting watch intent", { timeout: 10000 }, async (t) => {
+  const h = await setup(t, "one-at-a-time", { branch: "feature" });
+  assert.equal(h.states.at(-1)!.pullRequest!.target.number, 1);
+  assert.equal(h.states.at(-1)!.pullRequest!.watching, false);
+  assert.deepEqual(watchEntries(h), []);
+  assert.deepEqual(h.calls, []);
+  await h.session.prompt("Ordinary work on this branch");
+  await h.session.waitForIdle();
+  assert.deepEqual(h.calls, []);
+  assert.deepEqual(h.userCalls, []);
+  assert.ok(modelText(h.contexts.at(-1)!).every((text) =>
+    !text.includes(BABYSIT_PROMPT) && !text.includes("Review finding") && !text.includes("failed-check")));
 });
