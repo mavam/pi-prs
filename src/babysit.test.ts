@@ -5,7 +5,7 @@ import type {
   ExtensionCommandContext,
 } from "@earendil-works/pi-coding-agent";
 import { PI_PR_STATE_CHANNEL } from "./api.ts";
-import { BABYSIT_PROMPT } from "./babysit.ts";
+import { BABYSIT_MESSAGE_TYPE, BABYSIT_PROMPT } from "./babysit.ts";
 import { CI_FAILURE_MESSAGE_TYPE } from "./ci-message.ts";
 import extension from "./index.ts";
 import { FEEDBACK_MESSAGE_TYPE } from "./message.ts";
@@ -14,7 +14,7 @@ type Command = Parameters<ExtensionAPI["registerCommand"]>[1];
 
 async function setup(t: TestContext) {
   let command: Command | undefined;
-  const messages: Parameters<ExtensionAPI["sendUserMessage"]>[] = [];
+  const messages: Parameters<ExtensionAPI["sendMessage"]>[] = [];
   const customMessages: Parameters<ExtensionAPI["sendMessage"]>[] = [];
   const deliveries: string[] = [];
   const notifications: Array<{ text: string; type: string }> = [];
@@ -68,13 +68,17 @@ async function setup(t: TestContext) {
       assert.equal(name, "pr");
       command = value;
     },
-    sendUserMessage: (...args: Parameters<ExtensionAPI["sendUserMessage"]>) => {
-      messages.push(args);
-      deliveries.push("prompt");
+    sendUserMessage: () => {
+      assert.fail("Babysitting must use the same enqueue path as feedback");
     },
     sendMessage: (...args: Parameters<ExtensionAPI["sendMessage"]>) => {
-      customMessages.push(args);
-      deliveries.push(args[0].customType);
+      if (args[0].customType === BABYSIT_MESSAGE_TYPE) {
+        messages.push(args);
+        deliveries.push("prompt");
+      } else {
+        customMessages.push(args);
+        deliveries.push(args[0].customType);
+      }
     },
     exec: async (name: string, args: string[]) => {
       execCalls.push(`${name} ${args.join(" ")}`);
@@ -181,17 +185,20 @@ async function setup(t: TestContext) {
 for (const idle of [true, false]) {
   test(`watch --babysit delivers the prompt as a follow-up ahead of feedback when ${idle ? "idle" : "busy"}`, async (t) => {
     const {
-      command, context, start, state, messages, customMessages, deliveries, lifecycle,
+      command, context, start, state, messages, customMessages, deliveries,
     } = await setup(t);
     state.ciFailure = true;
     start();
     await command.handler("  watch   --babysit  ", context(idle));
 
-    assert.deepEqual(messages, [[BABYSIT_PROMPT, { deliverAs: "followUp" }]]);
-    if (idle) {
-      assert.deepEqual(deliveries, ["prompt"]);
-      lifecycle.get("agent_start")!({}, context());
-    }
+    assert.deepEqual(messages, [[
+      {
+        customType: BABYSIT_MESSAGE_TYPE,
+        content: BABYSIT_PROMPT,
+        display: true,
+      },
+      { deliverAs: "followUp", triggerTurn: true },
+    ]]);
     assert.deepEqual(deliveries, [
       "prompt", FEEDBACK_MESSAGE_TYPE, CI_FAILURE_MESSAGE_TYPE,
     ]);
