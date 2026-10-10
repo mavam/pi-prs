@@ -1,3 +1,5 @@
+export const BABYSIT_MESSAGE_TYPE = "pi-prs-babysit";
+
 /** Instructions injected by /pr watch --babysit; GitHub actions stay agent-driven. */
 export const BABYSIT_PROMPT = `Babysit the current PR: critically assess the existing review feedback and each new batch from pi-prs until I tell you to stop.
 

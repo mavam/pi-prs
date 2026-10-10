@@ -65,10 +65,12 @@ Start watching with a prompt that asks pi to assess and handle review feedback:
 /pr watch --babysit
 ```
 
-Once watching starts, `--babysit` adds a normal user message before the initial
-review feedback and CI failures are delivered. It starts an agent turn when idle
-or queues the prompt as a follow-up when busy. Plain `/pr watch` delivers feedback
-without adding the prompt; the extension doesn't perform GitHub actions itself.
+Once watching starts, `--babysit` sends a visible instruction message ahead of
+the initial review feedback and CI failures. The instructions and feedback use
+the same ordered delivery path: they start an agent turn when idle or queue as
+follow-ups when busy, without interrupting current work. Plain `/pr watch`
+delivers feedback without adding the prompt; the extension doesn't perform
+GitHub actions itself.
 
 The prompt instructs the agent to:
 
