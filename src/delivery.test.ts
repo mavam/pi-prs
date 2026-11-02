@@ -135,7 +135,7 @@ async function setup(
   };
   const url = () => `https://github.com/acme/repo/pull/${state.number}`;
   const response = (value: unknown) => ({
-    code: 0, stdout: typeof value === "string" ? value : JSON.stringify(value), stderr: "", killed: false,
+    code: 0, stdout: typeof value === "string" ? value : JSON.stringify(value), stderr: "", killed: false, truncated: false,
   });
   const metadata = () => ({
     number: state.number, url: url(), state: "OPEN", headRefOid: `sha-${state.batch}`,
