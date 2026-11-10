@@ -87,7 +87,8 @@ GitHub actions itself.
 The prompt instructs the agent to:
 
 - Critically verify each finding against the current code and intended behavior.
-- Fix valid findings, run relevant checks, and commit and push according to the
+- Fix valid findings, add a focused regression test only when it fills a meaningful
+  coverage gap, run relevant checks, and commit and push according to the
   repository's workflow.
 - Reply on GitHub with the addressing commit SHA or an evidence-based rejection
   reason, then resolve the review thread after the reply succeeds.
