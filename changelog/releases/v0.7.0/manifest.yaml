@@ -1,0 +1,8 @@
+created: 2026-11-10
+title: More selective regression testing during babysitting
+intro: >-
+  Babysitting now requests focused regression tests only when they fill a meaningful
+  coverage gap, reducing unnecessary test writing while preserving relevant checks.
+source:
+  mode: sync-stable-queue
+  previous_stable: v0.6.0
