@@ -83,7 +83,8 @@ async function setup(
   };
   t.after(async () => {
     await close();
-    await rm(root, { recursive: true, force: true });
+    // An SDK auth.json write can finish during cleanup and leave agent/ nonempty.
+    await rm(root, { recursive: true, force: true, maxRetries: 5 });
     assert.deepEqual(errors, [], "the real SDK must not swallow extension errors");
   });
   await Promise.all([mkdir(cwd, { recursive: true }), mkdir(agentDir)]);
