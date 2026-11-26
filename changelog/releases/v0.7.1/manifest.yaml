@@ -1,0 +1,8 @@
+created: 2026-11-26
+title: Delivery test maintenance
+intro: >-
+  The delivery tests now retry temporary directory cleanup when a Pi SDK write races
+  with teardown. Extension behavior is unchanged.
+source:
+  mode: sync-stable-queue
+  previous_stable: v0.7.0
