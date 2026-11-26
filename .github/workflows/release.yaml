@@ -16,6 +16,15 @@ on:
         description: User-facing release title (auto-generated if omitted)
         required: false
         type: string
+      bump:
+        description: Version bump (use patch to release without changelog entries)
+        type: choice
+        default: auto
+        options:
+          - auto
+          - patch
+          - minor
+          - major
 
 jobs:
   release:
@@ -26,6 +35,7 @@ jobs:
     with:
       intro: ${{ inputs.intro }}
       title: ${{ inputs.title }}
+      bump: ${{ inputs.bump }}
 
   publish:
     name: Publish package to npm
